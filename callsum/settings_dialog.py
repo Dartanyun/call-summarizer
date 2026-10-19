@@ -1,5 +1,7 @@
 """Окно настроек."""
 
+import sys
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
@@ -143,9 +145,14 @@ class SettingsDialog(QDialog):
         f.addRow("Приложения для звонков:", self.call_apps)
         self.notifications = _combo(config.NOTIFICATIONS, cfg.get("notifications", "all"))
         f.addRow("Уведомления:", self.notifications)
-        hint = QLabel("Значок в трее всегда показывает состояние: ожидание, запись, пауза, расшифровка. "
-                      "Начать или остановить запись из любого окна — <b>Meta+Shift+Z</b> "
-                      "(сменить: Параметры системы → Комбинации клавиш → «Саммари созвонов»).")
+        hotkey = getattr(parent, "hotkey_label", None)
+        if sys.platform == "win32":
+            how = (f"Начать или остановить запись из любого окна — <b>{hotkey}</b>." if hotkey
+                   else "Общесистемная горячая клавиша недоступна: Win+Shift+Z и Ctrl+Alt+Z заняты другими программами.")
+        else:
+            how = ("Начать или остановить запись из любого окна — <b>Meta+Shift+Z</b> "
+                   "(сменить: Параметры системы → Комбинации клавиш → «Саммари созвонов»).")
+        hint = QLabel("Значок в трее всегда показывает состояние: ожидание, запись, пауза, расшифровка. " + how)
         hint.setWordWrap(True)
         hint.setObjectName("Hint")
         f.addRow(hint)

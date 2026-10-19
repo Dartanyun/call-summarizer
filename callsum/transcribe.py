@@ -1,11 +1,12 @@
 """Локальное распознавание речи через faster-whisper."""
 
 import os
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+
+from . import osdeps
 
 SAMPLE_RATE = 16000
 
@@ -31,8 +32,8 @@ def _load_model(name: str):
 
 def decode(path: Path) -> np.ndarray:
     # системный ffmpeg вместо PyAV: не зависим от несовместимых версий av
-    r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
+    r = osdeps.run(
+        [osdeps.ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
          "-f", "f32le", "-ac", "1", "-ar", str(SAMPLE_RATE), "pipe:1"],
         capture_output=True,
     )

@@ -11,6 +11,7 @@
 
 import json
 import subprocess
+import sys
 from datetime import datetime
 
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal
@@ -19,7 +20,7 @@ from .audio import RECORDER_NAME
 from .config import DATA_DIR
 
 DEFAULT_APPS = ("zoom, telegram, discord, slack, teams, skype, chrome, chromium, firefox, yandex, "
-                "opera, vivaldi, brave, edge, signal, whatsapp, element, mattermost, jitsi, webex, vesktop")
+                "opera, vivaldi, brave, edge, signal, whatsapp, element, mattermost, jitsi, webex, vesktop, viber")
 LOG_FILE = DATA_DIR / "callwatch.log"
 
 # у этих «имён» название приложения ничего не говорит — показываем имя процесса
@@ -237,3 +238,8 @@ class CallWatcher(QObject):
         if self._match() is None and self.active is not None:
             name, self.active = self.active, None
             self.call_ended.emit(name)
+
+
+# В Windows вместо PipeWire — реестр «кто держит микрофон» (callwatch_win.py)
+if sys.platform == "win32":
+    from .callwatch_win import CallWatcher, call_output_monitor, call_streams, list_streams  # noqa: E402, F401, F811

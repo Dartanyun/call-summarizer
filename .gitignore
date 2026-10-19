@@ -8,3 +8,8 @@ __pycache__/
 *.part
 *.part.ogg
 *.tmp
+
+# сборка пакета
+build/
+dist/
+*.egg-info/

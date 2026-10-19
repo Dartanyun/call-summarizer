@@ -45,7 +45,9 @@ class Cancelled(Exception):
 # ---------------- модели ----------------
 
 def _download(url: str, sha256: str, dst: Path, on_status: Callable[[str, float | None], None], label: str):
-    tmp = Path(tempfile.mkstemp(dir=dst.parent, suffix=".part")[1])
+    fd, name = tempfile.mkstemp(dir=dst.parent, suffix=".part")
+    os.close(fd)  # в Windows файл с открытым дескриптором нельзя переименовать
+    tmp = Path(name)
     try:
         h = hashlib.sha256()
         with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:

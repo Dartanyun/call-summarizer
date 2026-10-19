@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "call-summarizer"
+version = "1.0.0"
+description = "Запись созвонов, локальное распознавание речи и говорящих, саммари через Claude"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6",
+    "faster-whisper>=1.1",
+    "anthropic>=1.15",
+    "sherpa-onnx>=1.12",
+    "numpy",
+    # только Windows: запись через WASAPI и ffmpeg внутри пакета
+    "soundcard>=0.4.4; sys_platform == 'win32'",
+    "imageio-ffmpeg>=0.5; sys_platform == 'win32'",
+]
+
+[project.gui-scripts]
+call-summarizer = "callsum.__main__:main"
+
+[tool.setuptools]
+packages = ["callsum"]
+
+[tool.setuptools.package-data]
+callsum = ["*.svg", "icons/*.svg", "icons/tray/*.svg"]

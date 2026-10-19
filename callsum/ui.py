@@ -3,6 +3,7 @@
 import bisect
 import os
 import shutil
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -88,6 +89,8 @@ class MainWindow(QMainWindow):
         self._tray_click: tuple[str, str] = ("show", "")
         self._tray_state = None
         self._quitting = False
+        self.hotkey = None
+        self.hotkey_label: str | None = None if sys.platform == "win32" else "Meta+Shift+Z"
         self._timeline_key = None
         self._search_hits: dict[str, bool] = {}
 
@@ -510,6 +513,21 @@ class MainWindow(QMainWindow):
         self.tray.messageClicked.connect(self.on_tray_message_clicked)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
+
+    def setup_hotkey(self, app):
+        """Общесистемная горячая клавиша. В Linux её назначает KDE по ярлыку (см. install.sh),
+        в Windows регистрируем сами."""
+        if sys.platform != "win32":
+            return
+        try:
+            from .hotkey_win import GlobalHotkey
+
+            self.hotkey = GlobalHotkey(app, int(self.winId()), self.toggle_recording)
+            self.hotkey_label = self.hotkey.label
+        except (OSError, AttributeError, ImportError):
+            self.hotkey, self.hotkey_label = None, None
+        if self.hotkey_label:
+            self.btn_record.setToolTip(f"Ctrl+R или {self.hotkey_label} из любого окна")
 
     def tray_available(self) -> bool:
         return QSystemTrayIcon.isSystemTrayAvailable() and self.tray.isVisible()
@@ -1611,6 +1629,8 @@ class MainWindow(QMainWindow):
         self.watcher.stop()
         if self.notifier:
             self.notifier.stop()
+        if self.hotkey:
+            self.hotkey.unregister()
         self.tray.hide()
         event.accept()
         QApplication.quit()

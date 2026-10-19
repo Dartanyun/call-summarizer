@@ -8,10 +8,10 @@ from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
-from . import config, theme
+from . import config, osdeps, theme
 
 # своя «почта» у каждой папки настроек: тестовая копия не достучится до основной
-SERVER_NAME = f"{config.APP_ID}-{os.getuid()}-{hashlib.md5(str(config.CONFIG_DIR).encode()).hexdigest()[:8]}"
+SERVER_NAME = f"{config.APP_ID}-{osdeps.user_id()}-{hashlib.md5(str(config.CONFIG_DIR).encode()).hexdigest()[:8]}"
 USAGE = """call-summarizer [--hidden] [--toggle]
   --hidden   запуститься свёрнутым в системный трей
   --toggle   начать или остановить запись (для горячей клавиши)"""
@@ -37,8 +37,14 @@ def main():
     command = "toggle" if "--toggle" in args else "show"
     hidden = "--hidden" in args
 
-    # системные диалоги открытия/сохранения файлов (KDE, GNOME) и определение тёмной темы
-    os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
+    if osdeps.IS_WIN:
+        # своё имя для Windows: по нему группируются окно на панели задач и уведомления
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CallSummarizer.App")
+    else:
+        # системные диалоги открытия/сохранения файлов (KDE, GNOME) и определение тёмной темы
+        os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
     app = QApplication(sys.argv[:1])
     # так программа подписана в настройках трея KDE и в списке звуковых потоков
     app.setApplicationName(config.APP_NAME)
@@ -65,6 +71,7 @@ def main():
     from .ui import MainWindow
 
     win = MainWindow(icon)
+    win.setup_hotkey(app)
 
     server = QLocalServer(app)
     QLocalServer.removeServer(SERVER_NAME)  # остаток от упавшего процесса

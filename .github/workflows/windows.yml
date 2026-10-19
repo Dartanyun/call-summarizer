@@ -1,0 +1,35 @@
+# Проверка версии для Windows на чистой Windows: установка, работа модулей, удаление.
+# Запускается вручную (Actions → Windows → Run workflow), чтобы не тратить минуты на каждый коммит.
+name: Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установка (install.cmd без участия пользователя)
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+
+      - name: Ярлык в меню «Пуск»
+        shell: pwsh
+        run: |
+          $lnk = Join-Path ([Environment]::GetFolderPath("Programs")) "Саммари созвонов.lnk"
+          if (-not (Test-Path $lnk)) { throw "Ярлык не создан: $lnk" }
+          (New-Object -ComObject WScript.Shell).CreateShortcut($lnk) | Format-List TargetPath, Arguments, IconLocation
+
+      - name: Проверка модулей
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: '& "$env:LOCALAPPDATA\CallSummarizer\venv\Scripts\python.exe" tests\windows_smoke.py'
+
+      - name: Удаление
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File uninstall.ps1

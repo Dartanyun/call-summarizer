@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 APP_ID = "call-summarizer"
@@ -10,8 +11,14 @@ APP_NAME = "Саммари созвонов"
 # имя иконки в теме; при смене рисунка меняем и имя — Plasma кэширует иконки по имени
 ICON_NAME = "call-summarizer-wave"
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_ID
-DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / APP_ID
+IS_WIN = sys.platform == "win32"
+if IS_WIN:
+    # настройки — в перемещаемом профиле, записи и модели — в локальном (их бывает много)
+    CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming")) / "CallSummarizer"
+    DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "CallSummarizer"
+else:
+    CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_ID
+    DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / APP_ID
 CALLS_DIR = DATA_DIR / "calls"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
@@ -58,8 +65,30 @@ RETENTION = [(0, "Хранить всегда"), (7, "7 дней"), (14, "14 д�
 AUTOSTART_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart" / f"{APP_ID}.desktop"
 
 
+_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def _set_autostart_windows(enabled: bool) -> None:
+    """Windows: значение в разделе автозапуска текущего пользователя (HKCU, Run) — без прав администратора."""
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            exe = Path(sys.executable)
+            pythonw = exe.with_name("pythonw.exe") if exe.name.lower() == "python.exe" else exe
+            winreg.SetValueEx(key, "CallSummarizer", 0, winreg.REG_SZ, f'"{pythonw}" -m callsum --hidden')
+        else:
+            try:
+                winreg.DeleteValue(key, "CallSummarizer")
+            except FileNotFoundError:
+                pass
+
+
 def set_autostart(enabled: bool) -> None:
-    """Ярлык в ~/.config/autostart: KDE и GNOME запускают его при входе в систему."""
+    """Запуск при входе в систему: ярлык в ~/.config/autostart (KDE, GNOME) или реестр (Windows)."""
+    if IS_WIN:
+        _set_autostart_windows(enabled)
+        return
     if not enabled:
         AUTOSTART_FILE.unlink(missing_ok=True)
         return

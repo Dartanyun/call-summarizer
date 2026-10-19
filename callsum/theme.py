@@ -1,5 +1,7 @@
 """Оформление: светлая и тёмная палитры, таблица стилей и собственные иконки."""
 
+import sys
+
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
@@ -142,13 +144,25 @@ TRAY_BADGES = {
 }
 
 
+def _taskbar_is_dark() -> bool:
+    """Windows: цвет панели задач задаётся отдельно от цвета приложений («режим Windows»)."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k, "SystemUsesLightTheme")[0] == 0
+    except OSError:
+        return True  # по умолчанию панель задач в Windows 10/11 тёмная
+
+
 def tray_icon(state: str) -> QIcon:
     # Установленные в тему значки (~/.local/share/icons/hicolor/scalable/status) передаются
     # в трей по имени: так KDE надёжнее их показывает и сам перекрашивает под цвет панели.
     name = f"call-summarizer-{state}"
     if QIcon.hasThemeIcon(name):
         return QIcon.fromTheme(name)
-    dark_panel = system_is_dark()
+    dark_panel = _taskbar_is_dark() if sys.platform == "win32" else system_is_dark()
     fg = "#fcfcfc" if dark_panel else "#232629"
     edge = "#202326" if dark_panel else "#eff0f1"
     badge = TRAY_BADGES.get(state)
@@ -194,7 +208,7 @@ def system_is_dark() -> bool:
 
 def ui_font() -> QFont:
     families = QFontDatabase.families()
-    for name in ("Inter", "Noto Sans", "Cantarell", "Ubuntu"):
+    for name in ("Inter", "Segoe UI Variable Text", "Segoe UI", "Noto Sans", "Cantarell", "Ubuntu"):
         if name in families:
             f = QFont(name)
             break
@@ -206,7 +220,7 @@ def ui_font() -> QFont:
 
 def mono_family() -> str:
     families = QFontDatabase.families()
-    for name in ("JetBrains Mono", "Noto Sans Mono", "Hack", "DejaVu Sans Mono"):
+    for name in ("JetBrains Mono", "Cascadia Mono", "Noto Sans Mono", "Hack", "DejaVu Sans Mono", "Consolas"):
         if name in families:
             return name
     return "monospace"
