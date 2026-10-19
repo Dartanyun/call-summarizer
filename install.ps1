@@ -42,13 +42,18 @@ $Exe = Join-Path $Venv "Scripts\call-summarizer.exe"
 if (-not (Test-Path $Exe)) { $Exe = Join-Path $Venv "Scripts\pythonw.exe"; $LnkArgs = "-m callsum" } else { $LnkArgs = "" }
 $Programs = [Environment]::GetFolderPath("Programs")
 $Shell = New-Object -ComObject WScript.Shell
-$Lnk = $Shell.CreateShortcut((Join-Path $Programs "Саммари созвонов.lnk"))
+# WScript.Shell сохраняет ярлык в кодировке системы: на нерусской Windows кириллица в имени
+# превратилась бы в «???». Сохраняем под латинским именем и переименовываем средствами PowerShell.
+$LnkTmp = Join-Path $Programs "CallSummarizer.lnk"
+$LnkFinal = Join-Path $Programs "Саммари созвонов.lnk"
+$Lnk = $Shell.CreateShortcut($LnkTmp)
 $Lnk.TargetPath = $Exe
 $Lnk.Arguments = $LnkArgs
 $Lnk.WorkingDirectory = $Root
 $Lnk.IconLocation = "$Ico,0"
 $Lnk.Description = "Записывает созвоны, распознаёт речь и делает краткое саммари"
 $Lnk.Save()
+Move-Item -Force -LiteralPath $LnkTmp -Destination $LnkFinal
 
 Write-Host ""
 Write-Host "Готово. Запуск: меню «Пуск» → «Саммари созвонов»."
