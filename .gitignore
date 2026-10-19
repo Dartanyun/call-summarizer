@@ -1,0 +1,10 @@
+# окружение Python и кэши
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# временные файлы записи
+*.part
+*.part.ogg
+*.tmp
