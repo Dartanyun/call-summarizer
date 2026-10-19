@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Установка «Саммари созвонов» для текущего пользователя (без sudo).
+# Работает и из папки с исходниками (ставит Python-библиотеки), и из готовой сборки с GitHub
+# (архив call-summarizer-X.Y.Z-linux-x86_64.tar.gz: программа там уже собрана со всеми библиотеками).
 set -euo pipefail
 
 APP_ID=call-summarizer
@@ -9,13 +11,17 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX="$DATA/$APP_ID"
 BIN="$HOME/.local/bin"
+BUNDLE=0
+[ -x "$SRC/$APP_ID" ] && [ -d "$SRC/_internal" ] && BUNDLE=1
 
 missing=()
 command -v ffmpeg  >/dev/null || missing+=(ffmpeg)
 command -v pactl   >/dev/null || missing+=(pulseaudio-utils)
-command -v python3 >/dev/null || missing+=(python3)
-if ! command -v uv >/dev/null && ! python3 -c "import ensurepip" 2>/dev/null; then
-    missing+=(python3-venv)
+if ((!BUNDLE)); then
+    command -v python3 >/dev/null || missing+=(python3)
+    if ! command -v uv >/dev/null && ! python3 -c "import ensurepip" 2>/dev/null; then
+        missing+=(python3-venv)
+    fi
 fi
 if ((${#missing[@]})); then
     echo "Не хватает системных пакетов. Установите их и запустите скрипт снова:"
@@ -23,7 +29,15 @@ if ((${#missing[@]})); then
     exit 1
 fi
 
+if ((BUNDLE)); then
+    echo "→ Копирую программу в $PREFIX/program"
+    # прежняя установка из исходников больше не нужна (~600 МБ)
+    rm -rf "$PREFIX/program" "$PREFIX/app" "$PREFIX/venv"
+    mkdir -p "$PREFIX/program"
+    cp -a "$SRC/$APP_ID" "$SRC/_internal" "$PREFIX/program/"
+else
 echo "→ Копирую приложение в $PREFIX/app"
+rm -rf "$PREFIX/program"  # прежняя установка из готовой сборки
 mkdir -p "$PREFIX/app"
 rm -rf "$PREFIX/app/callsum"
 cp -r "$SRC/callsum" "$PREFIX/app/"
@@ -38,18 +52,28 @@ else
     "$PREFIX/venv/bin/pip" install -q --upgrade pip
     "$PREFIX/venv/bin/pip" install -q -r "$SRC/requirements.txt"
 fi
+fi
 
 echo "→ Создаю команду $BIN/$APP_ID"
 mkdir -p "$BIN"
+if ((BUNDLE)); then
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$PREFIX/program/$APP_ID" > "$BIN/$APP_ID"
+else
 cat > "$BIN/$APP_ID" <<EOF
 #!/bin/sh
 PYTHONPATH="$PREFIX/app" exec "$PREFIX/venv/bin/python" -m callsum "\$@"
 EOF
+fi
 chmod +x "$BIN/$APP_ID"
 
 echo "→ Добавляю ярлык в меню приложений"
-install -Dm644 "$SRC/callsum/icon.svg" "$DATA/icons/hicolor/scalable/apps/$ICON_NAME.svg"
 rm -f "$DATA/icons/hicolor/scalable/apps/$APP_ID.svg"  # иконка под старым именем
+if ((BUNDLE)); then
+    # в готовой сборке иконки уже нарисованы во всех размерах
+    mkdir -p "$DATA/icons/hicolor"
+    cp -r "$SRC/share/icons/hicolor/." "$DATA/icons/hicolor/"
+else
+install -Dm644 "$SRC/callsum/icon.svg" "$DATA/icons/hicolor/scalable/apps/$ICON_NAME.svg"
 # PNG-копии: Plasma составляет список папок с иконками при запуске, и папки, созданные
 # позже (например, scalable/), до повторного входа в систему не видит
 QT_QPA_PLATFORM=offscreen "$PREFIX/venv/bin/python" - "$SRC/callsum/icon.svg" "$DATA/icons/hicolor" "$ICON_NAME" <<'PY' || true
@@ -75,6 +99,7 @@ PY
 for f in "$SRC"/callsum/icons/tray/*.svg; do
     install -Dm644 "$f" "$DATA/icons/hicolor/scalable/status/$(basename "$f")"
 done
+fi
 install -Dm644 /dev/stdin "$DATA/applications/$APP_ID.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -125,7 +150,11 @@ if command -v qdbus6 >/dev/null && command -v dbus-send >/dev/null && qdbus6 org
     fi
 fi
 
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$SRC/callsum/__init__.py")
+if ((BUNDLE)); then
+    VERSION=$("$PREFIX/program/$APP_ID" --version | cut -d' ' -f2)
+else
+    VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$SRC/callsum/__init__.py")
+fi
 echo
 echo "Готово, установлена версия $VERSION. Запуск: меню приложений → «Саммари созвонов» или команда $APP_ID"
 echo "Записи хранятся в $PREFIX/calls"

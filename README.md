@@ -67,7 +67,26 @@
 
 ## Установка
 
-### Linux
+### Готовые сборки
+
+Проще всего — скачать файл для своей системы со страницы [Releases](https://github.com/Dartanyun/call-summarizer/releases):
+Python и все библиотеки уже внутри, ничего докачивать не нужно.
+
+| Система | Файл | Как поставить |
+|---|---|---|
+| Windows 10/11 | `CallSummarizer-X.Y.Z-windows-x64-setup.exe` | запустить; права администратора не нужны |
+| Windows без установки | `CallSummarizer-X.Y.Z-windows-x64-portable.zip` | распаковать и запустить `CallSummarizer.exe` |
+| Debian 12+, Ubuntu 22.04+ | `call-summarizer_X.Y.Z_amd64.deb` | `sudo apt install ./call-summarizer_X.Y.Z_amd64.deb` |
+| Другие Linux | `call-summarizer-X.Y.Z-linux-x86_64.tar.gz` | распаковать и запустить `./install.sh` (без sudo) |
+
+Установщик для Windows ставит программу в `%LOCALAPPDATA%\Programs\CallSummarizer` и ярлык — в ваше
+меню «Пуск»; удаляется она через «Параметры → Приложения». Сборки не подписаны сертификатом, поэтому
+Windows может показать «Система Windows защитила ваш компьютер» — «Подробнее» → «Выполнить в любом случае».
+В Linux нужны пакеты `ffmpeg` и `pulseaudio-utils` (пакет `.deb` поставит их сам).
+
+Модели для распознавания скачиваются при первом использовании — см. ниже.
+
+### Из исходников: Linux
 
 ```bash
 ./install.sh
@@ -80,7 +99,7 @@
 При первом распознавании скачается модель Whisper (~1.6 ГБ для `large-v3-turbo`) в `~/.cache/huggingface`
 и модели определения говорящих (~47 МБ, проверяются по SHA-256) в `~/.local/share/call-summarizer/models`.
 
-### Windows 10/11
+### Из исходников: Windows 10/11
 
 Права администратора не нужны: всё ставится в профиль текущего пользователя.
 
@@ -180,7 +199,9 @@ call-summarizer --toggle
 ```
 
 начинает или останавливает запись (если приложение уже запущено, команда передаётся ему).
-`call-summarizer --version` показывает установленную версию.
+`call-summarizer --version` показывает установленную версию, а `call-summarizer --self-check` проверяет,
+что всё нужное для работы на месте: ffmpeg, Qt, распознавание речи и говорящих (с `--full` — ещё и
+пробное распознавание; в Windows результат записывается в файл: `--self-check --report отчёт.txt`).
 
 ## Иконка
 
@@ -194,6 +215,8 @@ call-summarizer --toggle
 ```
 
 Записи и настройки при этом сохраняются. Чтобы удалить и их, запустите `./uninstall.sh --purge`.
+Пакет `.deb` удаляется командой `sudo apt remove call-summarizer`, а программа, поставленная
+установщиком Windows, — через «Параметры → Приложения» (записи тоже остаются).
 
 ## Версии и обновление
 
@@ -203,7 +226,7 @@ call-summarizer --toggle
 в каждой версии — в [CHANGELOG.md](CHANGELOG.md) и на странице [Releases]({R}/releases).
 Установленную версию видно внизу окна настроек.
 
-Обновление: скачайте новую версию и снова запустите `./install.sh` (в Windows — `install.cmd`).
+Обновление: поставьте новую сборку поверх старой (или снова запустите `./install.sh` / `install.cmd`).
 Записи, настройки и запомненные голоса сохранятся.
 
 Выпуск новой версии (для разработчика): опишите изменения в разделе «Не выпущено» в
@@ -220,7 +243,16 @@ python3 scripts/release.py bump minor
 git push --follow-tags
 ```
 
-GitHub Actions соберёт релиз с текстом из CHANGELOG.md и проверит установку на чистой Windows.
+GitHub Actions соберёт и проверит готовые сборки для Linux и Windows и опубликует релиз с ними
+и текстом из CHANGELOG.md. Собрать самому (на той системе, для которой сборка):
+
+```bash
+python3 -m pip install . pyinstaller
+python3 packaging/build.py
+```
+
+Результат появится в `dist/`; для `.deb` нужен `dpkg-deb`, для установщика Windows —
+[Inno Setup 6](https://jrsoftware.org/isdl.php).
 
 ## Ограничения
 

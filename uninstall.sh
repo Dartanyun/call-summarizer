@@ -6,7 +6,7 @@ APP_ID=call-summarizer
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX="$DATA/$APP_ID"
 
-rm -rf "$PREFIX/app" "$PREFIX/venv"
+rm -rf "$PREFIX/app" "$PREFIX/venv" "$PREFIX/program"
 rm -f "$HOME/.local/bin/$APP_ID" \
       "$DATA/applications/$APP_ID.desktop" \
       "$DATA/applications/$APP_ID-toggle.desktop" \

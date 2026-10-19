@@ -12,10 +12,11 @@ from . import __version__, config, osdeps, theme
 
 # своя «почта» у каждой папки настроек: тестовая копия не достучится до основной
 SERVER_NAME = f"{config.APP_ID}-{osdeps.user_id()}-{hashlib.md5(str(config.CONFIG_DIR).encode()).hexdigest()[:8]}"
-USAGE = """call-summarizer [--hidden] [--toggle] [--version]
-  --hidden   запуститься свёрнутым в системный трей
-  --toggle   начать или остановить запись (для горячей клавиши)
-  --version  показать версию"""
+USAGE = """call-summarizer [--hidden] [--toggle] [--version] [--self-check [--full] [--report ФАЙЛ]]
+  --hidden      запуститься свёрнутым в системный трей
+  --toggle      начать или остановить запись (для горячей клавиши)
+  --version     показать версию
+  --self-check  проверить, что всё нужное для работы на месте (--full — с пробным распознаванием)"""
 
 
 def _send_to_running(command: str) -> bool:
@@ -30,14 +31,41 @@ def _send_to_running(command: str) -> bool:
     return True
 
 
+def _quiet_stdio():
+    """Сборка для Windows работает без консоли, и sys.stdout/stderr там None, а библиотеки
+    (например, полоска загрузки модели Whisper) пишут в stderr — подставляем заглушку."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    return sys.stderr.name == os.devnull
+
+
+def _log_to_file():
+    """Вывод работающей копии без консоли — в app.log рядом с записями (пригодится при ошибках)."""
+    try:
+        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        log = open(config.DATA_DIR / "app.log", "w", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+    sys.stdout = sys.stderr = log
+
+
 def main():
     args = sys.argv[1:]
+    no_console = _quiet_stdio()
+    osdeps.clean_child_env()
+    osdeps.fix_ssl_certs()
     if "--help" in args or "-h" in args:
         print(USAGE)
         return 0
     if "--version" in args or "-V" in args:
         print(f"call-summarizer {__version__}")
         return 0
+    if "--self-check" in args:
+        from .selfcheck import run
+
+        return run(args)
     command = "toggle" if "--toggle" in args else "show"
     hidden = "--hidden" in args
 
@@ -60,6 +88,8 @@ def main():
 
     if _send_to_running(command):
         return 0
+    if no_console:
+        _log_to_file()
 
     # русские подписи стандартных кнопок Qt («Сохранить», «Отмена» и т. п.)
     translator = QTranslator(app)
@@ -77,6 +107,10 @@ def main():
 
     win = MainWindow(icon)
     win.setup_hotkey(app)
+    if not osdeps.IS_WIN:
+        from . import kde_hotkey
+
+        kde_hotkey.ensure_once()
 
     server = QLocalServer(app)
     QLocalServer.removeServer(SERVER_NAME)  # остаток от упавшего процесса

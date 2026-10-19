@@ -75,9 +75,11 @@ def _set_autostart_windows(enabled: bool) -> None:
     # на «свежем» профиле раздела Run может ещё не быть — создаём его
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if enabled:
-            exe = Path(sys.executable)
-            pythonw = exe.with_name("pythonw.exe") if exe.name.lower() == "python.exe" else exe
-            winreg.SetValueEx(key, "CallSummarizer", 0, winreg.REG_SZ, f'"{pythonw}" -m callsum --hidden')
+            from subprocess import list2cmdline
+
+            from .osdeps import app_command
+
+            winreg.SetValueEx(key, "CallSummarizer", 0, winreg.REG_SZ, list2cmdline([*app_command(), "--hidden"]))
         else:
             try:
                 winreg.DeleteValue(key, "CallSummarizer")
@@ -93,12 +95,14 @@ def set_autostart(enabled: bool) -> None:
     if not enabled:
         AUTOSTART_FILE.unlink(missing_ok=True)
         return
+    import shlex
     import shutil
-    import sys
+
+    from .osdeps import app_command
 
     launcher = shutil.which(APP_ID) or str(Path.home() / ".local/bin" / APP_ID)
     if not Path(launcher).exists():
-        launcher = f"{sys.executable} -m callsum"
+        launcher = shlex.join(app_command())
     AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
     AUTOSTART_FILE.write_text(
         "[Desktop Entry]\nType=Application\n"

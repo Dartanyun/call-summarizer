@@ -1,38 +1,64 @@
 # Релиз на GitHub по метке версии: git push --follow-tags после `python3 scripts/release.py bump …`.
-# Текст релиза берётся из CHANGELOG.md.
+# Сначала собираются и проверяются готовые сборки (build.yml), затем публикуется релиз
+# с текстом из CHANGELOG.md и сборками для Linux и Windows.
 name: Release
 
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
       - name: Метка совпадает с версией
         run: python3 scripts/release.py check --tag "$GITHUB_REF_NAME"
 
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Текст релиза из CHANGELOG.md
         run: |
+          v=$(python3 scripts/release.py version)
           python3 scripts/release.py notes > notes.md
-          cat >> notes.md <<'TEXT'
+          cat >> notes.md <<TEXT
 
           ---
 
-          **Установка.** Скачайте ниже архив *Source code (zip)* и распакуйте.
-          Linux — запустите `./install.sh`, Windows 10/11 — дважды щёлкните `install.cmd`
-          (права администратора не нужны). Обновление — так же: записи, настройки и голоса сохранятся.
+          ### Скачать
+
+          - **Windows 10/11** — \`CallSummarizer-$v-windows-x64-setup.exe\`: установщик, права администратора
+            не нужны. Без установки — \`CallSummarizer-$v-windows-x64-portable.zip\`.
+          - **Debian, Ubuntu** — \`call-summarizer_${v}_amd64.deb\`:
+            \`sudo apt install ./call-summarizer_${v}_amd64.deb\`
+          - **Другие Linux** — \`call-summarizer-$v-linux-x86_64.tar.gz\`: распакуйте и запустите \`./install.sh\`
+            (sudo не нужен).
+
+          Обновление — так же, поверх прошлой версии: записи, настройки и голоса сохранятся.
+          Сборки не подписаны сертификатом, поэтому Windows может показать «Система Windows защитила
+          ваш компьютер» — «Подробнее» → «Выполнить в любом случае».
           TEXT
           cat notes.md
+          ls -l dist
 
       - name: Публикация релиза
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "Версия ${GITHUB_REF_NAME#v}" --notes-file notes.md
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "Версия ${GITHUB_REF_NAME#v}" --notes-file notes.md dist/*
