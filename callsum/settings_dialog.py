@@ -147,8 +147,10 @@ class SettingsDialog(QDialog):
         f.addRow("Уведомления:", self.notifications)
         hotkey = getattr(parent, "hotkey_label", None)
         if sys.platform == "win32":
+            err = getattr(getattr(parent, "hotkey", None), "error", 0)
             how = (f"Начать или остановить запись из любого окна — <b>{hotkey}</b>." if hotkey
-                   else "Общесистемная горячая клавиша недоступна: Win+Shift+Z и Ctrl+Alt+Z заняты другими программами.")
+                   else "Общесистемная горячая клавиша недоступна: Win+Shift+Z и Ctrl+Alt+Z заняты другими программами."
+                   if err in (0, 1409) else f"Общесистемную горячую клавишу не удалось включить (ошибка Windows {err}).")
         else:
             how = ("Начать или остановить запись из любого окна — <b>Meta+Shift+Z</b> "
                    "(сменить: Параметры системы → Комбинации клавиш → «Саммари созвонов»).")

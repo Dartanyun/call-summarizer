@@ -32,19 +32,30 @@ class _Filter(QAbstractNativeEventFilter):
         return False, 0
 
 
+ERROR_HOTKEY_ALREADY_REGISTERED = 1409
+
+
 class GlobalHotkey:
     def __init__(self, app, hwnd: int, callback):
         self.label: str | None = None
-        self._hwnd = hwnd
+        self.error: int = 0  # код ошибки Windows, если не удалось
+        self._hwnd: int | None = None
         self._filter = _Filter(callback)
         app.installNativeEventFilter(self._filter)
-        user32 = ctypes.windll.user32
-        for mods, vk, label in CANDIDATES:
-            if user32.RegisterHotKey(wintypes.HWND(hwnd), HOTKEY_ID, mods | MOD_NOREPEAT, vk):
-                self.label = label
-                break
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._user32 = user32
+        # сначала привязываем к окну; если окна нет (или дескриптор не настоящий) — к потоку
+        for target in (hwnd, None):
+            for mods, vk, label in CANDIDATES:
+                if user32.RegisterHotKey(wintypes.HWND(target) if target else None,
+                                         HOTKEY_ID, mods | MOD_NOREPEAT, vk):
+                    self.label, self._hwnd, self.error = label, target, 0
+                    return
+                self.error = ctypes.get_last_error()
+            if self.error == ERROR_HOTKEY_ALREADY_REGISTERED:
+                return  # сочетания заняты другими программами — к потоку тоже не выйдет
 
     def unregister(self):
         if self.label:
-            ctypes.windll.user32.UnregisterHotKey(wintypes.HWND(self._hwnd), HOTKEY_ID)
+            self._user32.UnregisterHotKey(wintypes.HWND(self._hwnd) if self._hwnd else None, HOTKEY_ID)
             self.label = None

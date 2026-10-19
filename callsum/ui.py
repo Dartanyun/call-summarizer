@@ -523,7 +523,7 @@ class MainWindow(QMainWindow):
             from .hotkey_win import GlobalHotkey
 
             self.hotkey = GlobalHotkey(app, int(self.winId()), self.toggle_recording)
-            self.hotkey_label = self.hotkey.label
+            self.hotkey_label = self.hotkey.label  # None — не удалось; причина в self.hotkey.error
         except (OSError, AttributeError, ImportError):
             self.hotkey, self.hotkey_label = None, None
         if self.hotkey_label:

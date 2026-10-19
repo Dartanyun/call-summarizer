@@ -20,13 +20,18 @@ jobs:
         shell: pwsh
         run: |
           $lnk = Join-Path ([Environment]::GetFolderPath("Programs")) "Саммари созвонов.lnk"
-          if (-not (Test-Path $lnk)) { throw "Ярлык не создан: $lnk" }
-          (New-Object -ComObject WScript.Shell).CreateShortcut($lnk) | Format-List TargetPath, Arguments, IconLocation
+          if (-not (Test-Path -LiteralPath $lnk)) { throw "Ярлык не создан: $lnk" }
+          # WScript.Shell не читает пути с кириллицей на английской Windows — читаем через копию
+          $copy = Join-Path $env:TEMP "check.lnk"
+          Copy-Item -LiteralPath $lnk $copy -Force
+          $s = (New-Object -ComObject WScript.Shell).CreateShortcut($copy)
+          $s | Format-List TargetPath, Arguments, IconLocation
+          if (-not (Test-Path $s.TargetPath)) { throw "Ярлык указывает на несуществующий файл: $($s.TargetPath)" }
 
       - name: Проверка модулей
         shell: pwsh
         env:
-          QT_QPA_PLATFORM: offscreen
+          # настоящий оконный режим Windows: нужен для горячей клавиши и трея
           PYTHONIOENCODING: utf-8
         run: '& "$env:LOCALAPPDATA\CallSummarizer\venv\Scripts\python.exe" tests\windows_smoke.py'
 

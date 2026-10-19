@@ -84,13 +84,14 @@ def window():
     w.setup_hotkey(app)
     w.show()
     app.processEvents()
-    label = w.hotkey_label
+    label = w.hotkey_label or f"нет (ошибка Windows {getattr(w.hotkey, 'error', '?')})"
+    tray = w.tray_available()
     w._quitting = True
     if w.hotkey:
         w.hotkey.unregister()
     w.watcher.stop()
     w.hide()
-    return f"окно открылось, горячая клавиша: {label}"
+    return f"окно открылось, горячая клавиша: {label}, трей доступен: {tray}"
 
 
 check("главное окно и горячая клавиша", window)

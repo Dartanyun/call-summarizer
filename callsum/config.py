@@ -72,7 +72,8 @@ def _set_autostart_windows(enabled: bool) -> None:
     """Windows: значение в разделе автозапуска текущего пользователя (HKCU, Run) — без прав администратора."""
     import winreg
 
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+    # на «свежем» профиле раздела Run может ещё не быть — создаём его
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if enabled:
             exe = Path(sys.executable)
             pythonw = exe.with_name("pythonw.exe") if exe.name.lower() == "python.exe" else exe
