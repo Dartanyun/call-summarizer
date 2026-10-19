@@ -1,0 +1,33 @@
+# Быстрая проверка каждого коммита: версия, ошибки в коде, сборка пакета. Около минуты на Linux.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Номер версии везде один
+        run: python scripts/release.py check
+
+      - name: Ошибки в коде (ruff)
+        run: |
+          python -m pip install --quiet ruff build
+          ruff check .
+
+      - name: Сборка пакета
+        run: |
+          python -m build --outdir dist .
+          version=$(python scripts/release.py version)
+          ls -l dist
+          test -f "dist/call_summarizer-$version-py3-none-any.whl"

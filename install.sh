@@ -125,6 +125,7 @@ if command -v qdbus6 >/dev/null && command -v dbus-send >/dev/null && qdbus6 org
     fi
 fi
 
+VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$SRC/callsum/__init__.py")
 echo
-echo "Готово. Запуск: меню приложений → «Саммари созвонов» или команда $APP_ID"
+echo "Готово, установлена версия $VERSION. Запуск: меню приложений → «Саммари созвонов» или команда $APP_ID"
 echo "Записи хранятся в $PREFIX/calls"

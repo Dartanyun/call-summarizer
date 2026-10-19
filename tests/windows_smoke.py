@@ -41,6 +41,19 @@ make_tone(tone)
 from callsum import audio, callwatch, config, osdeps  # noqa: E402
 
 check("платформа", lambda: f"IS_WIN={osdeps.IS_WIN}, папки {config.CONFIG_DIR} / {config.DATA_DIR}")
+
+
+def version():
+    from importlib.metadata import version as installed
+
+    import callsum
+
+    pkg = installed("call-summarizer")
+    assert pkg == callsum.__version__, f"пакет {pkg}, а callsum.__version__ {callsum.__version__}"
+    return pkg
+
+
+check("версия установленного пакета", version)
 check("движок записи — WASAPI", lambda: audio.TrackRecorder.__module__)
 check("определение звонков — реестр", lambda: callwatch.CallWatcher.__module__)
 check("ffmpeg из imageio-ffmpeg", lambda: osdeps.ffmpeg())

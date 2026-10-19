@@ -1,8 +1,11 @@
 # Проверка версии для Windows на чистой Windows: установка, работа модулей, удаление.
-# Запускается вручную (Actions → Windows → Run workflow), чтобы не тратить минуты на каждый коммит.
+# Запускается для каждой новой версии (метка vX.Y.Z) и вручную (Actions → Windows → Run workflow),
+# а не на каждый коммит: проверка идёт ~10 минут, а минуты Windows в GitHub Actions считаются вдвойне.
 name: Windows
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:

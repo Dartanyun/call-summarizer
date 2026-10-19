@@ -8,13 +8,14 @@ from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
-from . import config, osdeps, theme
+from . import __version__, config, osdeps, theme
 
 # своя «почта» у каждой папки настроек: тестовая копия не достучится до основной
 SERVER_NAME = f"{config.APP_ID}-{osdeps.user_id()}-{hashlib.md5(str(config.CONFIG_DIR).encode()).hexdigest()[:8]}"
-USAGE = """call-summarizer [--hidden] [--toggle]
+USAGE = """call-summarizer [--hidden] [--toggle] [--version]
   --hidden   запуститься свёрнутым в системный трей
-  --toggle   начать или остановить запись (для горячей клавиши)"""
+  --toggle   начать или остановить запись (для горячей клавиши)
+  --version  показать версию"""
 
 
 def _send_to_running(command: str) -> bool:
@@ -34,6 +35,9 @@ def main():
     if "--help" in args or "-h" in args:
         print(USAGE)
         return 0
+    if "--version" in args or "-V" in args:
+        print(f"call-summarizer {__version__}")
+        return 0
     command = "toggle" if "--toggle" in args else "show"
     hidden = "--hidden" in args
 
@@ -49,6 +53,7 @@ def main():
     # так программа подписана в настройках трея KDE и в списке звуковых потоков
     app.setApplicationName(config.APP_NAME)
     app.setApplicationDisplayName(config.APP_NAME)
+    app.setApplicationVersion(__version__)
     # по этому имени KDE связывает окно с ярлыком (иконка в панели задач)
     app.setDesktopFileName(config.APP_ID)
     app.setQuitOnLastWindowClosed(False)

@@ -1,0 +1,38 @@
+# Релиз на GitHub по метке версии: git push --follow-tags после `python3 scripts/release.py bump …`.
+# Текст релиза берётся из CHANGELOG.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Метка совпадает с версией
+        run: python3 scripts/release.py check --tag "$GITHUB_REF_NAME"
+
+      - name: Текст релиза из CHANGELOG.md
+        run: |
+          python3 scripts/release.py notes > notes.md
+          cat >> notes.md <<'TEXT'
+
+          ---
+
+          **Установка.** Скачайте ниже архив *Source code (zip)* и распакуйте.
+          Linux — запустите `./install.sh`, Windows 10/11 — дважды щёлкните `install.cmd`
+          (права администратора не нужны). Обновление — так же: записи, настройки и голоса сохранятся.
+          TEXT
+          cat notes.md
+
+      - name: Публикация релиза
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "Версия ${GITHUB_REF_NAME#v}" --notes-file notes.md

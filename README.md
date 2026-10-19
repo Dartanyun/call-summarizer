@@ -1,5 +1,14 @@
 # Саммари созвонов
 
+[![Версия](https://img.shields.io/badge/version-1.1.0-2f81f7)](CHANGELOG.md)
+[![CI](https://github.com/Dartanyun/call-summarizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Dartanyun/call-summarizer/actions/workflows/ci.yml)
+[![Windows](https://github.com/Dartanyun/call-summarizer/actions/workflows/windows.yml/badge.svg)](https://github.com/Dartanyun/call-summarizer/actions/workflows/windows.yml)
+[![Платформы](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%2010%2F11-informational)](#установка)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Qt](https://img.shields.io/badge/UI-Qt%206%20%28PySide6%29-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
+[![Claude](https://img.shields.io/badge/summary-Claude%20API-D97757?logo=claude&logoColor=white)](https://docs.claude.com/)
+[![Лицензия](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Приложение для Linux (Debian, KDE, GNOME и др.) и Windows 10/11: записывает созвон, локально распознаёт
 речь и делает структурированное саммари через Claude.
 
@@ -171,6 +180,7 @@ call-summarizer --toggle
 ```
 
 начинает или останавливает запись (если приложение уже запущено, команда передаётся ему).
+`call-summarizer --version` показывает установленную версию.
 
 ## Иконка
 
@@ -184,6 +194,33 @@ call-summarizer --toggle
 ```
 
 Записи и настройки при этом сохраняются. Чтобы удалить и их, запустите `./uninstall.sh --purge`.
+
+## Версии и обновление
+
+Номера версий — по правилам [семантического версионирования](https://semver.org/lang/ru/):
+`мажорная.минорная.исправление`. Исправления не меняют поведения, минорная версия добавляет
+возможности, мажорная — изменения, после которых что-то придётся настроить заново. Что нового
+в каждой версии — в [CHANGELOG.md](CHANGELOG.md) и на странице [Releases]({R}/releases).
+Установленную версию видно внизу окна настроек.
+
+Обновление: скачайте новую версию и снова запустите `./install.sh` (в Windows — `install.cmd`).
+Записи, настройки и запомненные голоса сохранятся.
+
+Выпуск новой версии (для разработчика): опишите изменения в разделе «Не выпущено» в
+[CHANGELOG.md](CHANGELOG.md), закоммитьте и выполните
+
+```bash
+python3 scripts/release.py bump minor
+```
+
+(`patch` — для исправлений, `major` — для крупных изменений). Скрипт поменяет номер в
+`callsum/__init__.py`, бейдж в README и CHANGELOG.md, сделает коммит и метку `vX.Y.Z`. После
+
+```bash
+git push --follow-tags
+```
+
+GitHub Actions соберёт релиз с текстом из CHANGELOG.md и проверит установку на чистой Windows.
 
 ## Ограничения
 

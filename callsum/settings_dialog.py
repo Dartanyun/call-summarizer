@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from . import audio, callwatch, config, voices
+from . import __version__, audio, callwatch, config, voices
 
 
 def _combo(items: list[tuple[str, str]], current: str) -> QComboBox:
@@ -212,12 +212,19 @@ class SettingsDialog(QDialog):
         save.setText("Сохранить")
         save.setObjectName("Primary")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
-        buttons.setContentsMargins(18, 0, 18, 0)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
-        outer.addWidget(buttons)
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(18, 0, 18, 0)
+        version = QLabel(f"Версия {__version__}")
+        version.setObjectName("Faint")
+        version.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        bottom.addWidget(version)
+        bottom.addStretch()
+        bottom.addWidget(buttons)
+        outer.addLayout(bottom)
 
     def _fill_voices(self):
         self.voices_list.clear()

@@ -55,7 +55,8 @@ $Lnk.Description = "Записывает созвоны, распознаёт р
 $Lnk.Save()
 Move-Item -Force -LiteralPath $LnkTmp -Destination $LnkFinal
 
+$Version = & $Py -c "import callsum; print(callsum.__version__)"
 Write-Host ""
-Write-Host "Готово. Запуск: меню «Пуск» → «Саммари созвонов»."
+Write-Host "Готово, установлена версия $Version. Запуск: меню «Пуск» → «Саммари созвонов»."
 Write-Host "Записи будут храниться в $Root\calls"
 Write-Host "Первое распознавание скачает модель Whisper (~1,6 ГБ)."
