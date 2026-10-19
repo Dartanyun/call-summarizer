@@ -35,6 +35,7 @@ NAME = "CallSummarizer" if IS_WIN else "call-summarizer"
 REPO = "https://github.com/Dartanyun/call-summarizer"
 ICON_SIZES = (48, 64, 128, 256)
 TOGGLE_NAME = "Саммари созвонов: начать или остановить запись"
+BOOKMARK_NAME = "Саммари созвонов: отметить важный момент"
 
 
 def step(text: str) -> None:
@@ -160,6 +161,15 @@ Exec={exe} --toggle
 Icon={config.ICON_NAME}
 NoDisplay=true
 X-KDE-Shortcuts=Meta+Shift+Z
+""",
+        f"{app_id}-bookmark.desktop": f"""[Desktop Entry]
+Type=Application
+Name={BOOKMARK_NAME}
+Name[en]=Call Summarizer: mark an important moment
+Exec={exe} --bookmark
+Icon={config.ICON_NAME}
+NoDisplay=true
+X-KDE-Shortcuts=Meta+Shift+B
 """,
     }
 

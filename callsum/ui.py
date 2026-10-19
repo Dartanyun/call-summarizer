@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from . import audio, callwatch, config, render, speakers, storage, theme, voices
+from . import (
+    audio, callwatch, config, digest, export, llm, render, sections, speakers, stats, storage, templates, theme, voices,
+)
+from .ask_view import AskPage, DigestPage
 from .pipeline import Pipeline
 from .notify import Notifier
 from .player import PlayerBar
@@ -37,6 +40,9 @@ MONTHS = ["января", "февраля", "марта", "апреля", "ма�
 
 BUSY_CHIPS = {"queued": "в очереди", "importing": "импорт", "transcribing": "распознаётся",
               "diarizing": "говорящие…", "summarizing": "саммари…"}
+
+# отметку «важный момент» ставим чуть раньше нажатия: обычно жмут, уже услышав важное
+BOOKMARK_LEAD = 3.0
 
 
 def fmt_duration(sec: float) -> str:
@@ -91,6 +97,10 @@ class MainWindow(QMainWindow):
         self._quitting = False
         self.hotkey = None
         self.hotkey_label: str | None = None if sys.platform == "win32" else "Meta+Shift+Z"
+        self.bookmark_hotkey = None
+        self.bookmark_hotkey_label: str | None = None if sys.platform == "win32" else "Meta+Shift+B"
+        self.view_mode = "calls"  # calls | ask | digest — что показано справа
+        self.help_window = None
         self._timeline_key = None
         self._search_hits: dict[str, bool] = {}
 
@@ -117,6 +127,10 @@ class MainWindow(QMainWindow):
         self.follow_timer = QTimer(self, interval=3000, timeout=self._follow_devices)
         self._follow_misses = 0
         self.cleanup_timer.start()
+        # итоги недели по расписанию: проверяем раз в 10 минут (и вскоре после запуска)
+        self.digest_timer = QTimer(self, interval=10 * 60 * 1000, timeout=self.check_digest)
+        self.digest_timer.start()
+        QTimer.singleShot(90 * 1000, self.check_digest)
         QApplication.styleHints().colorSchemeChanged.connect(self.on_scheme_changed)
 
         self.notifier = Notifier(self) if Notifier.available() else None
@@ -151,7 +165,12 @@ class MainWindow(QMainWindow):
         self.page_welcome = self._build_welcome()
         self.page_call = self._build_call_page()
         self.page_rec = self._build_recording_page()
-        for page in (self.page_welcome, self.page_call, self.page_rec):
+        get_calls = lambda: list(self.calls.values())  # noqa: E731
+        get_cfg = lambda: dict(self.cfg)  # noqa: E731
+        self.page_ask = AskPage(get_calls, get_cfg, self.open_call_at, lambda: self.open_settings("Саммари"))
+        self.page_digest = DigestPage(get_calls, get_cfg, self.open_call_at, lambda: self.open_settings("Саммари"))
+        self.page_digest.ready.connect(self.on_digest_ready)
+        for page in (self.page_welcome, self.page_call, self.page_rec, self.page_ask, self.page_digest):
             self.stack.addWidget(page)
         h.addWidget(self.stack, 1)
         self.setCentralWidget(root)
@@ -176,7 +195,8 @@ class MainWindow(QMainWindow):
         top.addSpacing(6)
         top.addWidget(title)
         top.addStretch()
-        top.addWidget(icon_button("settings", "Настройки (Ctrl+,)", self.open_settings))
+        top.addWidget(icon_button("help", "Справка (F1)", lambda: self.show_help()))
+        top.addWidget(icon_button("settings", "Настройки (Ctrl+,)", lambda: self.open_settings()))
         v.addLayout(top)
         v.addSpacing(6)
 
@@ -194,6 +214,22 @@ class MainWindow(QMainWindow):
         set_icon(self.btn_import, "upload")
         self.btn_import.clicked.connect(self.import_file)
         v.addWidget(self.btn_import)
+        nav = QHBoxLayout()
+        nav.setSpacing(8)
+        self.btn_ask = QPushButton("Спросить")
+        self.btn_ask.setToolTip("Вопрос по всем созвонам: что решили, кто что обещал (Ctrl+K)")
+        set_icon(self.btn_ask, "chat")
+        self.btn_ask.clicked.connect(self.show_ask)
+        self.btn_digest = QPushButton("Итоги недели")
+        self.btn_digest.setToolTip("Главное, решения и задачи за неделю по всем созвонам")
+        set_icon(self.btn_digest, "digest")
+        self.btn_digest.clicked.connect(lambda: self.show_digest())
+        for b in (self.btn_ask, self.btn_digest):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setCheckable(True)
+            b.setObjectName("NavButton")
+            nav.addWidget(b, 1)
+        v.addLayout(nav)
         v.addSpacing(6)
 
         self.search = QLineEdit()
@@ -212,7 +248,8 @@ class MainWindow(QMainWindow):
         self.list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setUniformItemSizes(False)
-        self.list.currentItemChanged.connect(lambda *_: self.show_current())
+        self.list.currentItemChanged.connect(self._on_list_changed)
+        self.list.itemPressed.connect(lambda _item: self._set_mode("calls"))
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.list_menu)
         v.addWidget(self.list, 1)
@@ -303,6 +340,12 @@ class MainWindow(QMainWindow):
         cta.addStretch()
         col.addLayout(cta)
 
+        how = QPushButton("Как пользоваться программой")
+        how.setObjectName("Link")
+        how.setCursor(Qt.CursorShape.PointingHandCursor)
+        how.clicked.connect(lambda: self.show_help())
+        col.addWidget(how, 0, Qt.AlignmentFlag.AlignHCenter)
+
         self.welcome_banner = Banner()
         col.addSpacing(10)
         col.addWidget(self.welcome_banner)
@@ -363,15 +406,20 @@ class MainWindow(QMainWindow):
         self.btn_primary.clicked.connect(self.on_primary)
         header.addWidget(self.btn_primary, 0, Qt.AlignmentFlag.AlignTop)
         header.addSpacing(6)
-        self.btn_copy = icon_button("copy", "Скопировать саммари", self.copy_current)
-        self.btn_export = icon_button("download", "Экспорт в Markdown…", self.export_current)
+        self.btn_copy = icon_button("copy", "Скопировать саммари (Ctrl+Shift+C)", self.copy_current)
+        self.btn_export = icon_button("download", "Экспорт: PDF, Word, Markdown, Telegram, Obsidian")
+        self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.export_menu = QMenu(self)
+        self.export_menu.aboutToShow.connect(self._fill_export_menu)
+        self.btn_export.setMenu(self.export_menu)
+        self.btn_tasks = icon_button("check", "Задачи — в YouTrack, Todoist или напоминания в календарь", self.open_tasks)
         self.btn_folder = icon_button("folder", "Открыть папку с записью", self.open_folder)
         self.btn_more = icon_button("more", "Ещё")
         self.btn_more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.more_menu = QMenu(self)
         self.more_menu.aboutToShow.connect(self._fill_more_menu)
         self.btn_more.setMenu(self.more_menu)
-        for b in (self.btn_copy, self.btn_export, self.btn_folder, self.btn_more):
+        for b in (self.btn_copy, self.btn_export, self.btn_tasks, self.btn_folder, self.btn_more):
             header.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
         v.addLayout(header)
 
@@ -393,7 +441,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.people)
 
         segrow = QHBoxLayout()
-        self.seg = Segmented(["Саммари", "Транскрипт"], self.on_tab)
+        self.seg = Segmented(["Саммари", "Транскрипт", "Статистика"], self.on_tab)
         segrow.addWidget(self.seg)
         segrow.addStretch()
         self.doc_info = QLabel()
@@ -404,7 +452,8 @@ class MainWindow(QMainWindow):
         self.docs = QStackedWidget()
         self.summary_view = QTextBrowser()
         self.transcript_view = QTextBrowser()
-        for view in (self.summary_view, self.transcript_view):
+        self.stats_view = QTextBrowser()
+        for view in (self.summary_view, self.transcript_view, self.stats_view):
             view.setObjectName("Doc")
             view.setOpenLinks(False)  # таймкоды обрабатываем сами
             view.anchorClicked.connect(self.on_anchor)
@@ -416,6 +465,7 @@ class MainWindow(QMainWindow):
 
         self.player = PlayerBar()
         self.player.position.connect(self.on_play_position)
+        self.player.timeline.bookmark_menu.connect(self.bookmark_menu)
         self._active_para = -1
         self._para_starts: list[float] = []
         v.addWidget(self.player)
@@ -462,7 +512,10 @@ class MainWindow(QMainWindow):
             self.meters[key] = (ic, lb, meter)
         col.addWidget(card, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        hint = QLabel("Окно можно свернуть — запись продолжится.\nОстановить её можно и из значка в системном трее.")
+        hint = QLabel("Окно можно свернуть — запись продолжится.\nОстановить её можно и из значка в системном трее.\n"
+                      "Прозвучало важное? «Отметить момент» — Ctrl+B"
+                      + (f" или {self.bookmark_hotkey_label} из любого окна." if self.bookmark_hotkey_label else "."))
+        self.rec_hint = hint
         hint.setProperty("muted", True)
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addSpacing(6)
@@ -484,11 +537,22 @@ class MainWindow(QMainWindow):
         stop.setMinimumWidth(240)
         set_icon(stop, "stop", "on_accent")
         stop.clicked.connect(lambda: self.stop_recording())
+        self.btn_mark = QPushButton("Отметить момент")
+        self.btn_mark.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_mark.setMinimumHeight(44)
+        self.btn_mark.setToolTip("Ctrl+B — важный момент попадёт в саммари и на шкалу плеера")
+        set_icon(self.btn_mark, "flag")
+        self.btn_mark.clicked.connect(self.add_bookmark)
         buttons.addStretch()
+        buttons.addWidget(self.btn_mark)
         buttons.addWidget(self.btn_pause)
         buttons.addWidget(stop)
         buttons.addStretch()
         col.addLayout(buttons)
+        self.marks_label = QLabel()
+        self.marks_label.setObjectName("Faint")
+        col.addSpacing(4)
+        col.addWidget(self.marks_label, 0, Qt.AlignmentFlag.AlignHCenter)
 
         outer.addLayout(col)
         outer.addStretch(3)
@@ -502,6 +566,8 @@ class MainWindow(QMainWindow):
         self.tray_rec = menu.addAction("Начать запись", self.toggle_recording)
         self.tray_pause = menu.addAction("Пауза", self.toggle_pause)
         self.tray_pause.setVisible(False)
+        self.tray_mark = menu.addAction("Отметить важный момент", self.add_bookmark)
+        self.tray_mark.setVisible(False)
         menu.addAction("Показать окно", self.show_window)
         menu.addSeparator()
         menu.addAction("Выход", self.quit_app)
@@ -522,12 +588,20 @@ class MainWindow(QMainWindow):
         try:
             from .hotkey_win import GlobalHotkey
 
+            from .hotkey_win import BOOKMARK_CANDIDATES, BOOKMARK_ID
+
             self.hotkey = GlobalHotkey(app, int(self.winId()), self.toggle_recording)
             self.hotkey_label = self.hotkey.label  # None — не удалось; причина в self.hotkey.error
+            self.bookmark_hotkey = GlobalHotkey(app, int(self.winId()), self.add_bookmark,
+                                                BOOKMARK_CANDIDATES, BOOKMARK_ID)
+            self.bookmark_hotkey_label = self.bookmark_hotkey.label
         except (OSError, AttributeError, ImportError):
             self.hotkey, self.hotkey_label = None, None
         if self.hotkey_label:
             self.btn_record.setToolTip(f"Ctrl+R или {self.hotkey_label} из любого окна")
+        self.rec_hint.setText(self.rec_hint.text().split("\nПрозвучало")[0] + "\nПрозвучало важное? «Отметить момент» — "
+                              "Ctrl+B" + (f" или {self.bookmark_hotkey_label} из любого окна." if self.bookmark_hotkey_label
+                                          else "."))
 
     def tray_available(self) -> bool:
         return QSystemTrayIcon.isSystemTrayAvailable() and self.tray.isVisible()
@@ -553,9 +627,12 @@ class MainWindow(QMainWindow):
         self.tray.setToolTip(f"{config.APP_NAME}\n{tip}")
 
     def handle_command(self, command: str):
-        """Команды от второго запуска программы: show — показать окно, toggle — запись (горячая клавиша)."""
+        """Команды от второго запуска программы: show — показать окно, toggle — запись,
+        bookmark — отметить важный момент (горячие клавиши KDE)."""
         if command == "toggle":
             self.toggle_recording()
+        elif command == "bookmark":
+            self.add_bookmark()
         else:
             self.show_window()
 
@@ -571,8 +648,11 @@ class MainWindow(QMainWindow):
             ("Ctrl+P", self.toggle_pause),
             ("Ctrl+O", self.import_file),
             ("Ctrl+F", lambda: (self.search.setFocus(), self.search.selectAll())),
-            ("Ctrl+,", self.open_settings),
+            ("Ctrl+,", lambda: self.open_settings()),
             ("Ctrl+Shift+C", self.copy_current),
+            ("Ctrl+B", self.add_bookmark),
+            ("Ctrl+K", self.show_ask),
+            ("F1", lambda: self.show_help()),
             ("Delete", self.delete_current),
         ):
             QShortcut(QKeySequence(keys), self, activated=slot)
@@ -599,6 +679,8 @@ class MainWindow(QMainWindow):
         self._timeline_key = None
         self.update_tray(force=True)
         self.welcome_banner.refresh_theme()
+        for page in (self.page_ask, self.page_digest):
+            page.banner.refresh_theme()
         self._rendered.clear()
         self.list.viewport().update()
         self.show_current()
@@ -743,6 +825,62 @@ class MainWindow(QMainWindow):
             if item.data(ROLE_ID) == call_id and call_id in self.calls:
                 self._fill_item(item, self.calls[call_id])
 
+    def _on_list_changed(self, *_):
+        if self.list.hasFocus():
+            self.view_mode = "calls"  # выбрали созвон стрелками с клавиатуры
+        self.show_current()
+
+    def _set_mode(self, mode: str):
+        self.view_mode = mode
+        self.btn_ask.setChecked(mode == "ask")
+        self.btn_digest.setChecked(mode == "digest")
+        self.show_current()
+
+    def show_ask(self):
+        self.show_window()
+        self._set_mode("ask")
+        self.page_ask.refresh()
+
+    def show_digest(self, monday=None):
+        self.show_window()
+        if monday is not None:
+            self.page_digest.show_week(monday)
+        self._set_mode("digest")
+        self.page_digest.refresh()
+
+    def open_call_at(self, call_id: str, seconds: float | None = None):
+        """Открыть созвон (из ответа на вопрос или итогов недели) и, если указано, перейти к моменту."""
+        if call_id not in self.calls:
+            return
+        if self.search.text():
+            self.search.clear()
+        self.view_mode = "calls"
+        self.btn_ask.setChecked(False)
+        self.btn_digest.setChecked(False)
+        self.reload_list(select=call_id)
+        call = self.calls[call_id]
+        if seconds is None:
+            return
+        if call.tracks():
+            self.player.play_at(seconds)
+        else:
+            self.seg.set_index(1)
+            self.on_tab(1)
+            starts = [p["start"] for p in call.paragraphs()]
+            if starts:
+                self.transcript_view.scrollToAnchor(f"p{max(0, bisect.bisect_right(starts, seconds + 0.05) - 1)}")
+
+    def show_help(self, topic: str | None = None):
+        from .help_view import HelpWindow
+
+        if self.help_window is None:
+            self.help_window = HelpWindow(self, open_settings=lambda: self.open_settings())
+        if topic:
+            self.help_window.show_topic(topic)
+        self.help_window.show()
+        self.help_window.raise_()
+        self.help_window.activateWindow()
+
     def current_id(self) -> str | None:
         item = self.list.currentItem()
         return item.data(ROLE_ID) if item and item.data(ROLE_KIND) == "call" else None
@@ -754,19 +892,27 @@ class MainWindow(QMainWindow):
     # ================= правая часть =================
 
     def show_current(self):
+        if self.view_mode == "ask":
+            self.stack.setCurrentWidget(self.page_ask)
+            self.page_ask.set_scope_call(self.current_call())
+            return
+        if self.view_mode == "digest":
+            self.stack.setCurrentWidget(self.page_digest)
+            return
         call = self.current_call()
         if call is None or call is self.recording_call:
             self.player.set_call(None)
             self.toast.bottom_margin = 28
         if call is None:
             self.stack.setCurrentWidget(self.page_welcome)
-            if config.api_key(self.cfg):
+            if llm.ready(self.cfg):
                 self.welcome_banner.hide()
             else:
                 self.welcome_banner.set(
-                    "warn", "key", "Чтобы получать саммари, добавьте API-ключ Anthropic",
-                    "Записывать и распознавать речь можно и без него.",
-                    button=("Открыть настройки", self.open_settings),
+                    "warn", "key", f"Чтобы получать саммари, {llm.not_ready_text(self.cfg)}",
+                    "Записывать и распознавать речь можно и без этого. Подойдёт и локальная модель — "
+                    "тогда текст не уходит в интернет.",
+                    button=("Открыть настройки", lambda: self.open_settings("Саммари")),
                 )
             return
         if call is self.recording_call:
@@ -783,6 +929,9 @@ class MainWindow(QMainWindow):
 
         self.title_label.setText(call.title)
         self.meta_date.setText(call.created.strftime("%d.%m.%Y, %H:%M"))
+        from . import calendar_ics
+
+        self.meta_date_w.setToolTip(calendar_ics.note(call.meta.get("calendar") or {}))
         self.meta_dur_w.setVisible(bool(call.duration))
         self.meta_dur.setText(fmt_duration(call.duration))
         src = call.meta.get("original_file")
@@ -819,6 +968,7 @@ class MainWindow(QMainWindow):
             self.btn_primary.hide()
         self.btn_copy.setEnabled(bool(summary))
         self.btn_export.setEnabled(bool(summary) or has_tr)
+        self.btn_tasks.setEnabled(bool(summary) and not busy and bool(call.tasks()))
 
         self.update_banner()
         self.update_docs()
@@ -836,9 +986,9 @@ class MainWindow(QMainWindow):
         elif call.status == "error":
             self.banner.set("error", "alert", "Не получилось обработать запись",
                             call.meta.get("error", ""), button=("Повторить", self.retry_current))
-        elif call.has_transcript() and not call.summary() and not config.api_key(self.cfg):
-            self.banner.set("warn", "key", "Чтобы получить саммари, добавьте API-ключ Anthropic",
-                            button=("Настройки", self.open_settings))
+        elif call.has_transcript() and not call.summary() and not llm.ready(self.cfg):
+            self.banner.set("warn", "key", f"Чтобы получить саммари, {llm.not_ready_text(self.cfg)}",
+                            button=("Настройки", lambda: self.open_settings("Саммари")))
         else:
             self.banner.hide()
 
@@ -859,7 +1009,7 @@ class MainWindow(QMainWindow):
                     render.show_summary(self.summary_view, summary)
                 elif busy:
                     render.show_placeholder(self.summary_view, "Саммари появится здесь",
-                                            "Сначала запись распознается, затем Claude напишет саммари.")
+                                            f"Сначала запись распознается, затем {llm.who(self.cfg)} напишет саммари.")
                 elif call.has_transcript():
                     render.show_placeholder(self.summary_view, "Саммари пока нет",
                                             "Нажмите «Сделать саммари» вверху справа.")
@@ -869,7 +1019,26 @@ class MainWindow(QMainWindow):
         # транскрипт
         transcript = call.transcript()
         self._render_transcript(call, transcript)
+        if self.docs.currentIndex() == 2:
+            self._render_stats(call)
         self._update_doc_info(call, transcript)
+
+    def _render_stats(self, call: storage.Call):
+        names = call.speaker_names()
+        key = (call.id, len(call.paragraphs()), tuple(names.items()), theme.is_dark)
+        if self._rendered.get("stats") == key:
+            return
+        self._rendered["stats"] = key
+        st = stats.compute(call.paragraphs(), names, call.duration)
+        if st is None:
+            render.show_placeholder(self.stats_view, "Статистики пока нет",
+                                    "Она появится, когда запись распознается и будут определены говорящие.")
+            return
+        by_sid = theme.speaker_colors(names)
+        colors = {}
+        for sid, name in names.items():
+            colors.setdefault(name, by_sid[sid])
+        render.show_stats(self.stats_view, st, colors)
 
     def _render_transcript(self, call: storage.Call, transcript: str):
         active = self._active_para if self.player.is_playing() or self._active_para >= 0 else -1
@@ -895,8 +1064,10 @@ class MainWindow(QMainWindow):
             words = len(transcript.split())
             self.doc_info.setText(f"{words} {plural(words, 'слово', 'слова', 'слов')}")
         elif self.docs.currentIndex() == 0 and call.summary():
-            model = dict(config.CLAUDE_MODELS).get(call.meta.get("summary_model", ""), "")
-            self.doc_info.setText(model.split(" — ")[0] if model else "")
+            model = call.meta.get("summary_label") or dict(config.CLAUDE_MODELS).get(
+                call.meta.get("summary_model", ""), "").split(" — ")[0]
+            kind = templates.NAMES.get(call.meta.get("template", ""), "")
+            self.doc_info.setText(" · ".join(x for x in (kind, model) if x))
         else:
             self.doc_info.setText("")
 
@@ -906,16 +1077,20 @@ class MainWindow(QMainWindow):
         if call:
             if index == 1:
                 self._render_transcript(call, call.transcript())
+            elif index == 2:
+                self._render_stats(call)
             self._update_doc_info(call, call.transcript())
 
     # ---------- плеер и таймкоды ----------
 
     def _update_timeline(self, call: storage.Call):
-        """Цветная полоса говорящих и ромбики пунктов саммари в плеере."""
+        """Цветная полоса говорящих, ромбики пунктов саммари, главы и отметки в плеере."""
         paragraphs = call.paragraphs()
         names = call.speaker_names()
         summary = call.summary()
-        key = (call.id, len(paragraphs), tuple(names.items()), hash(summary), theme.is_dark)
+        marks = call.bookmarks()
+        key = (call.id, len(paragraphs), tuple(names.items()), hash(summary), theme.is_dark,
+               tuple((b["t"], b.get("note", "")) for b in marks))
         if key == self._timeline_key:
             return
         self._timeline_key = key
@@ -923,12 +1098,13 @@ class MainWindow(QMainWindow):
         segments = [(p["start"], p["end"], colors.get(p.get("speaker"), theme.C["accent"]),
                      names.get(p.get("speaker"), "")) for p in paragraphs if p.get("speaker")]
         markers = []
-        for line in render.strip_title(summary).splitlines():
+        body = sections.without_section(render.strip_title(summary), sections.CHAPTER_HEADINGS)
+        for line in body.splitlines():
             for m in render._TIMECODE.finditer(line):
                 text = render._TIMECODE.sub("", line)
                 text = text.lstrip("-*0123456789. ").removeprefix("[ ]").removeprefix("[x]").strip(" —-*_")
                 markers.append((render._seconds(m.group(1)), text[:90]))
-        self.player.set_timeline(segments, markers)
+        self.player.set_timeline(segments, markers, [(b["t"], b.get("note", "")) for b in marks], call.chapters())
 
     def on_anchor(self, url: QUrl):
         if url.scheme() == "t":
@@ -1029,9 +1205,16 @@ class MainWindow(QMainWindow):
         a = m.addAction(theme.icon("refresh", theme.C["muted"]), "Распознать заново",
                         lambda: self.run_stages(["transcribe", "speakers", "summarize"]))
         a.setEnabled(bool(call.tracks()) and not busy)
-        a = m.addAction(theme.icon("sparkles", theme.C["muted"]), "Сделать саммари заново",
-                        lambda: self.run_stages(["summarize"]))
-        a.setEnabled(call.has_transcript() and not busy)
+        sub = m.addMenu(theme.icon("sparkles", theme.C["muted"]), "Сделать саммари заново")
+        sub.setEnabled(call.has_transcript() and not busy)
+        current = call.meta.get("template_choice") or ""
+        for key, name in templates.CHOICES:
+            label = name if key != templates.AUTO else f"{name} (сейчас — {templates.NAMES.get(call.meta.get('template', ''), 'общий').lower()})"
+            act = sub.addAction(label, lambda k=key: self.resummarize(k))
+            act.setCheckable(True)
+            act.setChecked(key == (current or templates.AUTO))
+            if key == templates.AUTO:
+                sub.addSeparator()
         a = m.addAction(theme.icon("users", theme.C["muted"]), "Указать число участников…", self.recount_speakers)
         a.setEnabled(call.has_transcript() and bool(call.tracks()) and not busy and self.cfg.get("diarize", True))
         m.addSeparator()
@@ -1044,6 +1227,121 @@ class MainWindow(QMainWindow):
         m.addAction(theme.icon("folder", theme.C["muted"]), "Открыть папку", self.open_folder)
         m.addSeparator()
         m.addAction(theme.icon("trash", theme.C["red"]), "Удалить в корзину", self.delete_current)
+
+    def resummarize(self, template: str):
+        call = self.current_call()
+        if not call or self.pipeline.is_busy(call.id):
+            return
+        call.save(template_choice="" if template == templates.AUTO else template)
+        self.run_stages(["summarize"])
+
+    # ---------- экспорт и задачи ----------
+
+    def _fill_export_menu(self):
+        m = self.export_menu
+        m.clear()
+        call = self.current_call()
+        if not call:
+            return
+        has_summary = bool(call.summary())
+        for label, kind in (("Markdown (.md)…", "md"), ("PDF…", "pdf"), ("Word (.docx)…", "docx")):
+            m.addAction(theme.icon("download", theme.C["muted"]), label, lambda k=kind: self.export_current(k))
+        m.addSeparator()
+        a = m.addAction(theme.icon("send", theme.C["muted"]), "Скопировать для Telegram", self.copy_telegram)
+        a.setEnabled(has_summary)
+        if self.cfg.get("obsidian_dir"):
+            a = m.addAction(theme.icon("folder", theme.C["muted"]), "Сохранить в Obsidian", self.save_obsidian)
+        else:
+            a = m.addAction(theme.icon("folder", theme.C["muted"]), "Сохранить в Obsidian… (выбрать папку)",
+                            lambda: self.open_settings("Интеграции"))
+        a.setEnabled(has_summary)
+
+    def copy_telegram(self):
+        call = self.current_call()
+        if not call or not call.summary():
+            return
+        text = export.telegram_text(call)
+        QApplication.clipboard().setText(text)
+        tail = (f" Внимание: {len(text)} символов — длиннее одного сообщения Telegram ({export.TELEGRAM_LIMIT})."
+                if len(text) > export.TELEGRAM_LIMIT else "")
+        self.toast.show_message("Скопировано для Telegram — вставьте в чат." + tail, 6000 if tail else 3500)
+
+    def save_obsidian(self):
+        call = self.current_call()
+        if not call:
+            return
+        try:
+            path = export.save_obsidian(call, Path(self.cfg["obsidian_dir"]).expanduser())
+        except OSError as e:
+            self.toast.show_message(f"Не удалось сохранить в Obsidian: {e}", 6000, error=True)
+            return
+        self.toast.show_message(f"Заметка в Obsidian: {path.name}")
+
+    def open_tasks(self):
+        from .tasks_dialog import TasksDialog
+
+        call = self.current_call()
+        if not call or not call.tasks():
+            self.toast.show_message("В саммари этого созвона нет задач.")
+            return
+        TasksDialog(self, call, dict(self.cfg), lambda: self.open_settings("Интеграции")).exec()
+
+    # ---------- отметки «важный момент» ----------
+
+    def add_bookmark(self):
+        """Во время записи — отметка в идущем созвоне; при прослушивании — там, где сейчас плеер."""
+        if self.recorder and self.recording_call:
+            mark = self.recording_call.add_bookmark(self.recorder.elapsed - BOOKMARK_LEAD)
+            self._update_marks_label()
+            when = fmt_duration(mark["t"])
+            if self.isActiveWindow():
+                self.toast.show_message(f"Момент {when} отмечен — он попадёт в саммари.")
+            else:
+                self.notify("Момент отмечен", f"{when} — попадёт в саммари.")
+            return
+        call = self.current_call()
+        if (self.view_mode == "calls" and call and self.stack.currentWidget() is self.page_call
+                and self.player.isVisible() and call.tracks()):
+            mark = call.add_bookmark(self.player.current_position())
+            self._timeline_key = None
+            self._update_timeline(call)
+            hint = " Чтобы она попала в текст, сделайте саммари заново (меню «⋯»)." if call.summary() else ""
+            self.toast.show_message(f"Отметка {fmt_duration(mark['t'])} добавлена.{hint}", 5000)
+        elif self.isActiveWindow():
+            self.toast.show_message("Отметки ставятся во время записи или прослушивания созвона.")
+
+    def _update_marks_label(self):
+        n = len(self.recording_call.bookmarks()) if self.recording_call else 0
+        self.marks_label.setText(f"⚑ Отмечено моментов: {n}" if n else "")
+
+    def bookmark_menu(self, index: int, pos):
+        call = self.current_call()
+        marks = call.bookmarks() if call else []
+        if not (0 <= index < len(marks)):
+            return
+        mark = marks[index]
+        menu = QMenu(self)
+        menu.addAction(theme.icon("play", theme.C["muted"]), "Слушать отсюда", lambda: self.player.play_at(mark["t"]))
+        menu.addAction(theme.icon("pencil", theme.C["muted"]), "Подписать…", lambda: self._note_bookmark(call, index))
+        menu.addAction(theme.icon("trash", theme.C["red"]), "Удалить отметку", lambda: self._remove_bookmark(call, index))
+        menu.exec(pos)
+
+    def _note_bookmark(self, call: storage.Call, index: int):
+        marks = call.bookmarks()
+        note, ok = QInputDialog.getText(self, "Отметка", f"Подпись к моменту {fmt_duration(marks[index]['t'])}:",
+                                        text=marks[index].get("note", ""))
+        if ok:
+            marks[index]["note"] = note.strip()
+            call.set_bookmarks(marks)
+            self._timeline_key = None
+            self._update_timeline(call)
+
+    def _remove_bookmark(self, call: storage.Call, index: int):
+        marks = call.bookmarks()
+        del marks[index]
+        call.set_bookmarks(marks)
+        self._timeline_key = None
+        self._update_timeline(call)
 
     # ---------- участники ----------
 
@@ -1151,7 +1449,7 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         call.save(num_speakers=0 if item == items[0] else int(item))
-        stages = ["speakers"] + (["summarize"] if call.summary() and config.api_key(self.cfg) else [])
+        stages = ["speakers"] + (["summarize"] if call.summary() and llm.ready(self.cfg) else [])
         self.pipeline.enqueue(call, stages)
         self.refresh_item(call.id)
         self.show_current()
@@ -1203,23 +1501,22 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(call.summary())
             self.toast.show_message("Саммари скопировано — можно вставить в чат или заметки.")
 
-    def export_current(self):
+    def export_current(self, kind: str = "md"):
         call = self.current_call()
         if not call:
             return
-        safe = "".join(ch if ch.isalnum() or ch in " -_." else "_" for ch in call.title).strip() or "созвон"
+        filters = {"md": "Markdown (*.md)", "pdf": "PDF (*.pdf)", "docx": "Документ Word (*.docx)"}
         path, _ = QFileDialog.getSaveFileName(
-            self, "Экспорт", str(Path.home() / f"{safe}.md"), "Markdown (*.md);;Текст (*.txt)"
-        )
+            self, "Экспорт", str(Path.home() / f"{export.safe_name(call.title)}.{kind}"), filters[kind])
         if not path:
             return
-        parts = []
-        if call.summary():
-            parts.append(call.summary())
-        if call.has_transcript():
-            parts.append("## Транскрипт\n\n" + call.transcript())
-        Path(path).write_text("\n\n---\n\n".join(parts) + "\n", encoding="utf-8")
-        self.toast.show_message(f"Сохранено: {Path(path).name}")
+        target = Path(path) if Path(path).suffix else Path(path).with_suffix(f".{kind}")
+        try:
+            {"md": export.save_markdown, "pdf": export.save_pdf, "docx": export.save_docx}[kind](call, target)
+        except OSError as e:
+            QMessageBox.warning(self, "Экспорт", f"Не удалось сохранить файл:\n{e}")
+            return
+        self.toast.show_message(f"Сохранено: {target.name}")
 
     # ================= запись =================
 
@@ -1263,6 +1560,8 @@ class MainWindow(QMainWindow):
         self._set_record_button(True)
         self.tray_rec.setText("Остановить запись")
         self.tray_pause.setVisible(True)
+        self.tray_mark.setVisible(True)
+        self._update_marks_label()
         self._update_pause_ui()
         self.rec_timer.start()
         self._follow_misses = 0
@@ -1337,6 +1636,8 @@ class MainWindow(QMainWindow):
         self._set_record_button(False)
         self.tray_rec.setText("Начать запись")
         self.tray_pause.setVisible(False)
+        self.tray_mark.setVisible(False)
+        self.marks_label.setText("")
 
         silent = rec.silent_tracks()
         call.save(status="recorded", duration=round(duration, 1))
@@ -1454,7 +1755,10 @@ class MainWindow(QMainWindow):
         self.show_window()
         kind, _, value = tag.partition(":")
         if kind == "call" and value in self.calls:
+            self._set_mode("calls")
             self.reload_list(select=value)
+        elif kind == "digest":
+            self.show_digest(date.fromisoformat(value) if value else None)
 
     def on_tray_message_clicked(self):
         kind, value = self._tray_click
@@ -1463,12 +1767,31 @@ class MainWindow(QMainWindow):
             return
         self.show_window()
         if kind == "call" and value in self.calls:
+            self._set_mode("calls")
             self.reload_list(select=value)
+        elif kind == "digest":
+            self.show_digest(date.fromisoformat(value) if value else None)
+
+    # ================= итоги недели =================
+
+    def check_digest(self):
+        """По расписанию из настроек собираем итоги недели в фоне и сообщаем, когда готово."""
+        if not llm.ready(self.cfg):
+            return
+        monday = digest.due(self.cfg, list(self.calls.values()))
+        if monday is not None:
+            self.page_digest.generate(monday, quiet=True)
+
+    def on_digest_ready(self, monday):
+        if self.view_mode == "digest":
+            return
+        self._popup(f"digest:{monday.isoformat()}", "Итоги недели готовы", digest.period(monday),
+                    [("default", "Открыть"), ("open", "Открыть")])
 
     # ================= обработка =================
 
     def _with_summary(self, stages: list[str]) -> list[str]:
-        return stages + (["summarize"] if config.api_key(self.cfg) else [])
+        return stages + (["summarize"] if llm.ready(self.cfg) else [])
 
     def import_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Открыть запись созвона", str(Path.home()), MEDIA_FILTER)
@@ -1498,10 +1821,10 @@ class MainWindow(QMainWindow):
         call = self.current_call()
         if not call or self.pipeline.is_busy(call.id):
             return
-        if "summarize" in stages and not config.api_key(self.cfg):
+        if "summarize" in stages and not llm.ready(self.cfg):
             if stages == ["summarize"]:
-                self.toast.show_message("Сначала укажите API-ключ Anthropic в настройках.")
-                self.open_settings()
+                self.toast.show_message(f"Сначала {llm.not_ready_text(self.cfg)}.")
+                self.open_settings("Саммари")
                 return
             stages = [s for s in stages if s != "summarize"]
         self.pipeline.enqueue(call, stages)
@@ -1533,7 +1856,7 @@ class MainWindow(QMainWindow):
         cid = self.current_id()
         if cid in self.live_summary:
             self._rendered.pop("summary", None)
-            render.show_summary(self.summary_view, self.live_summary[cid])
+            render.show_summary(self.summary_view, templates.hide_partial_marker(self.live_summary[cid]))
             sb = self.summary_view.verticalScrollBar()
             sb.setValue(sb.maximum())
 
@@ -1543,7 +1866,7 @@ class MainWindow(QMainWindow):
         call = self.calls.get(call_id)
         if stage == "summarize" and call:
             self.notify("Саммари готово", call.title, kind="summary", call_id=call_id)
-        elif stage == "speakers" and call and not config.api_key(self.cfg):
+        elif stage == "speakers" and call and not llm.ready(self.cfg):
             self.notify("Распознавание завершено", call.title, call_id=call_id)
         self.refresh_item(call_id)
         self.update_tray()
@@ -1576,8 +1899,8 @@ class MainWindow(QMainWindow):
 
     # ================= настройки и выход =================
 
-    def open_settings(self):
-        dlg = SettingsDialog(self.cfg, self)
+    def open_settings(self, page: str = ""):
+        dlg = SettingsDialog(self.cfg, self, page)
         if dlg.exec():
             old_theme = self.cfg.get("theme", "system")
             old_days = self.cfg.get("audio_retention_days")
@@ -1590,6 +1913,10 @@ class MainWindow(QMainWindow):
                 self.run_cleanup()
             self.toast.show_message("Настройки сохранены.")
             self.show_current()
+            if self.view_mode == "ask":
+                self.page_ask.refresh()
+            elif self.view_mode == "digest":
+                self.page_digest.refresh()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1631,6 +1958,8 @@ class MainWindow(QMainWindow):
             self.notifier.stop()
         if self.hotkey:
             self.hotkey.unregister()
+        if self.bookmark_hotkey:
+            self.bookmark_hotkey.unregister()
         self.tray.hide()
         event.accept()
         QApplication.quit()

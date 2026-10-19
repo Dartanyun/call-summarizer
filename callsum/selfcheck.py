@@ -158,6 +158,29 @@ def run(args: list[str]) -> int:
 
     check("саммари (Claude API)", claude)
 
+    def calendar():
+        import icalendar
+        import recurring_ical_events
+
+        cal = icalendar.Calendar.from_ical(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:1\r\nSUMMARY:Планёрка\r\n"
+            "DTSTART;TZID=Europe/Moscow:20260105T100000\r\nDTEND;TZID=Europe/Moscow:20260105T101500\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+        found = recurring_ical_events.of(cal).between((2026, 1, 1), (2026, 2, 1))
+        assert len(found) == 4, f"повторов найдено {len(found)} вместо 4"
+        return f"icalendar {icalendar.__version__}, часовые пояса на месте"
+
+    check("календарь (iCal)", calendar)
+
+    def help_files():
+        from .help_view import topics
+
+        found = topics()
+        assert len(found) >= 10, f"тем справки: {len(found)}"
+        return f"тем справки: {len(found)}"
+
+    check("справка", help_files)
+
     def certificates():
         import ssl
 

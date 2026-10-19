@@ -115,7 +115,7 @@ Categories=AudioVideo;Audio;Recorder;
 Keywords=созвон;встреча;саммари;транскрипт;запись;meeting;call;summary;transcript;
 StartupWMClass=$APP_ID
 EOF
-# горячая клавиша: отдельный скрытый ярлык «начать/остановить запись»
+# горячие клавиши: отдельные скрытые ярлыки «начать/остановить запись» и «отметить момент»
 TOGGLE_NAME="Саммари созвонов: начать или остановить запись"
 install -Dm644 /dev/stdin "$DATA/applications/$APP_ID-toggle.desktop" <<DESKTOP
 [Desktop Entry]
@@ -127,27 +127,40 @@ Icon=$ICON_NAME
 NoDisplay=true
 X-KDE-Shortcuts=Meta+Shift+Z
 DESKTOP
+BOOKMARK_NAME="Саммари созвонов: отметить важный момент"
+install -Dm644 /dev/stdin "$DATA/applications/$APP_ID-bookmark.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=$BOOKMARK_NAME
+Name[en]=Call Summarizer: mark an important moment
+Exec=$BIN/$APP_ID --bookmark
+Icon=$ICON_NAME
+NoDisplay=true
+X-KDE-Shortcuts=Meta+Shift+B
+DESKTOP
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$DATA/applications" || true
 command -v gtk-update-icon-cache  >/dev/null && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" 2>/dev/null || true
 command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 >/dev/null 2>&1 || true
 
 # В KDE сочетание из ярлыка регистрируется, но само не включается — включаем,
 # если оно свободно и вы не назначили своё.
-if command -v qdbus6 >/dev/null && command -v dbus-send >/dev/null && qdbus6 org.kde.kglobalaccel >/dev/null 2>&1; then
-    COMP="$APP_ID-toggle.desktop"
-    OBJ="/component/${APP_ID//-/_}_toggle_desktop"
-    KEY=301989978  # Meta+Shift+Z
+assign_kde_shortcut() {  # ярлык, название действия, код сочетания, подпись
+    local comp="$1" name="$2" key="$3" label="$4" obj="/component/${1//[-.]/_}"
     for _ in 1 2 3 4 5; do
-        qdbus6 org.kde.kglobalaccel | grep -qx "$OBJ" && break
+        qdbus6 org.kde.kglobalaccel | grep -qx "$obj" && break
         sleep 1
     done
-    info=$(qdbus6 --literal org.kde.kglobalaccel "$OBJ" org.kde.kglobalaccel.Component.allShortcutInfos 2>/dev/null || true)
+    info=$(qdbus6 --literal org.kde.kglobalaccel "$obj" org.kde.kglobalaccel.Component.allShortcutInfos 2>/dev/null || true)
     if [[ "$info" == *"[Argument: ai {0}], [Argument: ai"* ]] &&
-       [ "$(qdbus6 org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel.isGlobalShortcutAvailable $KEY "$COMP")" = "true" ]; then
+       [ "$(qdbus6 org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel.isGlobalShortcutAvailable "$key" "$comp")" = "true" ]; then
         dbus-send --session --dest=org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel.setForeignShortcut \
-            array:string:"$COMP","_launch","$TOGGLE_NAME","$TOGGLE_NAME" array:int32:$KEY &&
-            echo "→ Горячая клавиша Meta+Shift+Z: начать/остановить запись"
+            array:string:"$comp","_launch","$name","$name" array:int32:"$key" &&
+            echo "→ Горячая клавиша $label"
     fi
+}
+if command -v qdbus6 >/dev/null && command -v dbus-send >/dev/null && qdbus6 org.kde.kglobalaccel >/dev/null 2>&1; then
+    assign_kde_shortcut "$APP_ID-toggle.desktop" "$TOGGLE_NAME" 301989978 "Meta+Shift+Z: начать/остановить запись"
+    assign_kde_shortcut "$APP_ID-bookmark.desktop" "$BOOKMARK_NAME" 301989954 "Meta+Shift+B: отметить важный момент"
 fi
 
 if ((BUNDLE)); then

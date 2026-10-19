@@ -10,6 +10,7 @@ rm -rf "$PREFIX/app" "$PREFIX/venv" "$PREFIX/program"
 rm -f "$HOME/.local/bin/$APP_ID" \
       "$DATA/applications/$APP_ID.desktop" \
       "$DATA/applications/$APP_ID-toggle.desktop" \
+      "$DATA/applications/$APP_ID-bookmark.desktop" \
       "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/$APP_ID.desktop" \
       "$DATA/icons/hicolor/scalable/apps/$APP_ID.svg" \
       "$DATA/icons/hicolor/scalable/apps/$APP_ID-wave.svg" \
@@ -17,8 +18,10 @@ rm -f "$HOME/.local/bin/$APP_ID" \
       "$DATA"/icons/hicolor/scalable/status/$APP_ID-*.svg
 command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 >/dev/null 2>&1 || true
 if command -v dbus-send >/dev/null; then
-    dbus-send --session --dest=org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel.unregister \
-        string:"$APP_ID-toggle.desktop" string:"_launch" >/dev/null 2>&1 || true
+    for comp in "$APP_ID-toggle.desktop" "$APP_ID-bookmark.desktop"; do
+        dbus-send --session --dest=org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel.unregister \
+            string:"$comp" string:"_launch" >/dev/null 2>&1 || true
+    done
 fi
 
 if [[ "${1:-}" == "--purge" ]]; then

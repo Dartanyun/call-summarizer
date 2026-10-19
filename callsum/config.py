@@ -59,6 +59,18 @@ NOTIFICATIONS = [
     ("none", "Не показывать — только значок в трее"),
 ]
 
+WHISPER_DEVICES = [
+    ("auto", "Видеокарта NVIDIA, если есть, иначе процессор"),
+    ("cpu", "Процессор"),
+    ("cuda", "Видеокарта NVIDIA (CUDA)"),
+]
+
+DIGEST_SCHEDULES = [
+    ("off", "Не собирать сами"),
+    ("fri17", "По пятницам в 17:00"),
+    ("mon10", "По понедельникам в 10:00 — за прошлую неделю"),
+]
+
 RETENTION = [(0, "Хранить всегда"), (7, "7 дней"), (14, "14 дней"), (30, "30 дней"),
              (90, "90 дней"), (180, "180 дней")]
 
@@ -154,6 +166,8 @@ DEFAULTS = {
     "record_mic": True,
     "record_system": True,
     "diarize": True,        # определять говорящих по голосу
+    "whisper_device": "auto",  # auto | cpu | cuda
+    "denoise": False,       # шумоподавление перед распознаванием
     "auto_process": True,
     "theme": "system",
     "vocabulary": "",       # термины и имена, по одному на строку
@@ -166,7 +180,21 @@ DEFAULTS = {
     "notifications": "all",  # all | summary | none
     # хранение
     "audio_retention_days": 0,  # 0 — хранить аудио всегда
-    "summary_prompt": DEFAULT_PROMPT,
+    # саммари
+    "llm_backend": "claude",   # claude | ollama
+    "ollama_url": "",          # "" — http://localhost:11434
+    "ollama_model": "",
+    "summary_template": "auto",  # auto | general | standup | … | custom (см. templates.py)
+    "summary_prompt": DEFAULT_PROMPT,  # текст своего шаблона
+    "digest_schedule": "fri17",  # итоги недели: off | fri17 | mon10
+    # интеграции
+    "calendar_urls": "",       # ссылки на календари в формате iCal (.ics), по одной на строку
+    "youtrack_url": "",
+    "youtrack_token": "",
+    "youtrack_project": "",
+    "todoist_token": "",
+    "obsidian_dir": "",        # папка заметок Obsidian
+    "obsidian_auto": False,    # сохранять туда каждое готовое саммари
 }
 
 

@@ -2,3 +2,6 @@ PySide6>=6.6
 faster-whisper>=1.1
 anthropic>=1.15
 sherpa-onnx>=1.12
+numpy
+icalendar>=6
+recurring-ical-events>=3

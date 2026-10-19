@@ -20,10 +20,12 @@ def _fmt(ms: int) -> str:
 
 
 class Timeline(QWidget):
-    """Полоса записи: цветом — кто когда говорил, ромбиками — пункты саммари, кружок — текущее место."""
+    """Полоса записи: цветом — кто когда говорил, ромбиками — пункты саммари, флажками — отметки
+    «важный момент», чёрточками — начала глав, кружок — текущее место."""
 
     seek = Signal(float)      # секунды, по отпусканию мыши
     scrub = Signal(float)     # секунды, пока тянут
+    bookmark_menu = Signal(int, object)  # номер отметки, глобальная точка — правый клик по флажку
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,12 +36,17 @@ class Timeline(QWidget):
         self.position = 0.0
         self.segments: list[tuple[float, float, str, str]] = []  # начало, конец, цвет, имя
         self.markers: list[tuple[float, str]] = []
+        self.bookmarks: list[tuple[float, str]] = []
+        self.chapters: list[tuple[float, str]] = []
         self._drag = False
+        self.setMinimumHeight(40)
 
-    def set_data(self, duration: float, segments, markers):
+    def set_data(self, duration: float, segments, markers, bookmarks=(), chapters=()):
         self.duration = max(0.0, duration)
         self.segments = segments
         self.markers = markers
+        self.bookmarks = list(bookmarks)
+        self.chapters = list(chapters)
         self.update()
 
     def set_duration(self, duration: float):
@@ -88,6 +95,19 @@ class Timeline(QWidget):
         else:
             p.fillRect(QRectF(tr.left(), tr.top(), played_x - tr.left(), tr.height()), QColor(theme.C["accent"]))
         p.restore()
+        # начала глав — светлые чёрточки поперёк полосы
+        p.setPen(QColor(theme.C["bg"]))
+        for t, _title in self.chapters:
+            if t > 0:
+                x = self._x(t)
+                p.drawLine(QPointF(x, tr.top() - 1), QPointF(x, tr.bottom() + 1))
+        p.setPen(Qt.PenStyle.NoPen)
+        # отметки «важный момент» — флажки под полосой
+        p.setBrush(QColor(theme.C["red"]))
+        for t, _note in self.bookmarks:
+            x = self._x(t)
+            y = tr.bottom() + 3
+            p.drawPolygon([QPointF(x, y), QPointF(x + 4.5, y + 6), QPointF(x - 4.5, y + 6)])
         # пункты саммари
         p.setBrush(QColor(theme.C["amber"]))
         for t, _text in self.markers:
@@ -99,7 +119,17 @@ class Timeline(QWidget):
             p.setBrush(QColor(theme.C["text"]))
             p.drawEllipse(QPointF(played_x, tr.center().y()), 6.5, 6.5)
 
+    def _bookmark_at(self, x: float, y: float) -> int:
+        if y < self._track().bottom():
+            return -1
+        return next((i for i, (t, _n) in enumerate(self.bookmarks) if abs(self._x(t) - x) < 7), -1)
+
     def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            i = self._bookmark_at(e.position().x(), e.position().y())
+            if i >= 0:
+                self.bookmark_menu.emit(i, e.globalPosition().toPoint())
+            return
         if self.duration and e.button() == Qt.MouseButton.LeftButton:
             self._drag = True
             self.position = self._t(e.position().x())
@@ -112,15 +142,22 @@ class Timeline(QWidget):
             self.position = t
             self.scrub.emit(t)
             self.update()
-        # подсказка: пункт саммари рядом или кто говорит в этот момент
+        # подсказка: пункт саммари или отметка рядом, иначе — глава и кто говорит в этот момент
         tip = ""
+        x, y = e.position().x(), e.position().y()
         for mt, text in self.markers:
-            if abs(self._x(mt) - e.position().x()) < 6 and e.position().y() < self._track().top():
+            if abs(self._x(mt) - x) < 6 and y < self._track().top():
                 tip = f"{_fmt(int(mt * 1000))} — {text}"
                 break
+        i = self._bookmark_at(x, y)
+        if not tip and i >= 0:
+            bt, note = self.bookmarks[i]
+            tip = f"⚑ {_fmt(int(bt * 1000))}" + (f" — {note}" if note else " — отмеченный момент") + \
+                  "\nПравая кнопка — подписать или удалить"
         if not tip and self.duration:
             who = next((name for s, en, _c, name in self.segments if s <= t <= en), "")
-            tip = f"{_fmt(int(t * 1000))}" + (f" · {who}" if who else "")
+            chapter = next((title for ct, title in reversed(self.chapters) if ct <= t), "")
+            tip = f"{_fmt(int(t * 1000))}" + (f" · {chapter}" if chapter else "") + (f" · {who}" if who else "")
         if tip:
             QToolTip.showText(e.globalPosition().toPoint(), tip, self)
 
@@ -282,8 +319,11 @@ class PlayerBar(QFrame):
             self._pending = None
             self.player.play()
 
-    def set_timeline(self, segments, markers):
-        self.timeline.set_data(self.timeline.duration, segments, markers)
+    def set_timeline(self, segments, markers, bookmarks=(), chapters=()):
+        self.timeline.set_data(self.timeline.duration, segments, markers, bookmarks, chapters)
+
+    def current_position(self) -> float:
+        return self.timeline.position
 
     def _on_position(self, ms: int):
         self.timeline.set_position(ms / 1000)

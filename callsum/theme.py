@@ -91,6 +91,15 @@ _ICONS = {
     "play": '<path d="M8.5 5.8v12.4a.8.8 0 0 0 1.2.7l9.6-6.2a.8.8 0 0 0 0-1.4L9.7 5.1a.8.8 0 0 0-1.2.7z" fill="currentColor" stroke="none"/>',
     "pause": '<rect x="6.8" y="5.5" width="3.8" height="13" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.4" y="5.5" width="3.8" height="13" rx="1.2" fill="currentColor" stroke="none"/>',
     "back": '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/>',
+    "help": '<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6"/><circle cx="12" cy="16.9" r=".6" fill="currentColor"/>',
+    "chat": '<path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z"/><path d="M8 10h8"/><path d="M8 13.2h5"/>',
+    "digest": '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M7.5 14h9"/><path d="M7.5 17h5"/>',
+    "flag": '<path d="M6 21V4"/><path d="M6 4.5h11l-2.2 3.6L17 11.7H6"/>',
+    "check": '<path d="M4 6.5l1.6 1.6L8.5 5"/><path d="M11 6.5h9"/><path d="M4 12.5l1.6 1.6 2.9-3.1"/><path d="M11 12.5h9"/><path d="M4.5 18.5h3"/><path d="M11 18.5h9"/>',
+    "chart": '<path d="M4 20h16"/><rect x="5.5" y="11" width="3" height="6.5" rx="1"/><rect x="10.5" y="6.5" width="3" height="11" rx="1"/><rect x="15.5" y="13.5" width="3" height="4" rx="1"/>',
+    "send": '<path d="M20.5 3.5 3.5 10.5l7 2.5 2.5 7z"/><path d="m20.5 3.5-10 9.5"/>',
+    "chevron_left": '<path d="M14.5 6 8.5 12l6 6"/>',
+    "chevron_right": '<path d="M9.5 6l6 6-6 6"/>',
     "forward": '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
 }
 
@@ -280,6 +289,7 @@ QPushButton:pressed {{ background: {border}; }}
 QPushButton:disabled {{ color: {faint}; background: transparent; }}
 QPushButton#Primary {{ background: {accent}; color: {on_accent}; border: none; }}
 QPushButton#Primary:hover {{ background: {accent_hover}; }}
+QPushButton#Primary:disabled {{ background: {surface}; color: {faint}; border: 1px solid {border}; }}
 QPushButton#Record {{
     background: {red}; color: #ffffff; border: none; border-radius: 11px;
     padding: 11px 16px; font-size: 10.5pt; font-weight: 700;
@@ -290,6 +300,13 @@ QPushButton#Ghost {{ background: transparent; border: 1px solid transparent; col
 QPushButton#Ghost:hover {{ background: {hover}; color: {text}; }}
 QPushButton#Link {{ background: transparent; border: none; color: {accent}; padding: 2px 4px; }}
 QPushButton#Link:hover {{ text-decoration: underline; }}
+QPushButton#NavButton {{ padding: 7px 10px; }}
+QListWidget#SideNav {{ background: transparent; border: none; outline: none; }}
+QListWidget#SideNav::item {{ padding: 7px 8px; border-radius: 7px; margin: 1px 0; }}
+QListWidget#SideNav::item:hover {{ background: {hover}; }}
+QListWidget#SideNav::item:selected {{ background: {accent_soft}; color: {text}; }}
+QListWidget#Tasks::item {{ padding: 6px 4px; }}
+QPushButton#NavButton:checked {{ background: {accent_soft}; border: 1px solid {accent}; color: {text}; }}
 
 QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 6px; }}
 QToolButton:hover {{ background: {hover}; }}

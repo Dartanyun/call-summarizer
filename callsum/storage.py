@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import speakers, transcribe
+from . import sections, speakers, transcribe
 from .config import CALLS_DIR
 
 TRACK_FILES = ("mic.ogg", "system.ogg", "audio.ogg")
@@ -187,6 +187,30 @@ class Call:
     def write_voice_embeddings(self, embs: dict[str, list[float]]) -> None:
         self._write_json("voices.json", embs)
 
+    # отметки «важный момент», поставленные во время записи или прослушивания: [{"t": секунды, "note": подпись}]
+    def bookmarks(self) -> list[dict]:
+        items = [b for b in self.meta.get("bookmarks") or [] if isinstance(b, dict) and "t" in b]
+        return sorted(items, key=lambda b: float(b["t"]))
+
+    def add_bookmark(self, t: float, note: str = "") -> dict:
+        mark = {"t": round(max(0.0, t), 1), "note": note.strip()}
+        self.save(bookmarks=[*self.bookmarks(), mark])
+        return mark
+
+    def set_bookmarks(self, items: list[dict]) -> None:
+        self.save(bookmarks=sorted(items, key=lambda b: float(b["t"])))
+
+    # разобранное саммари: главы для шкалы плеера и задачи для трекеров
+    def chapters(self) -> list[tuple[int, str]]:
+        return sections.chapters(self.summary())
+
+    def tasks(self) -> list[sections.Task]:
+        return sections.tasks(self.summary(), self.created.date())
+
+    def participants(self) -> list[str]:
+        """Имена участников без повторов (спикеры с одинаковым именем — один человек)."""
+        return list(dict.fromkeys(self.speaker_names().values()))
+
     # саммари
     def summary(self) -> str:
         try:
@@ -197,8 +221,9 @@ class Call:
     def write_summary(self, text: str) -> None:
         (self.path / "summary.md").write_text(text, encoding="utf-8")
         # название встречи берём из первого заголовка, если пользователь не переименовал её сам
+        # и оно не пришло из календаря
         m = re.match(r"\s*#\s+(.+)", text)
-        if m and not self.meta.get("title_manual"):
+        if m and not self.meta.get("title_manual") and self.meta.get("title_source") != "calendar":
             self.save(title=m.group(1).strip()[:120])
 
 

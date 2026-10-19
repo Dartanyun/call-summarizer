@@ -1,5 +1,6 @@
 """Фоновая очередь обработки: импорт → распознавание → саммари."""
 
+import hashlib
 import queue
 import threading
 import traceback
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from . import audio, config, speakers, summarize, transcribe, voices
+from . import audio, calendar_ics, config, llm, speakers, summarize, templates, transcribe, voices
 from .storage import Call
 
 
@@ -104,6 +105,7 @@ class Pipeline(QObject):
         if not tracks:
             raise RuntimeError("У этого созвона нет аудиозаписи.")
         call.save(status="transcribing")
+        self._match_calendar(call, cfg)
         words = transcribe.transcribe(
             tracks,
             model_name=cfg["whisper_model"],
@@ -111,7 +113,10 @@ class Pipeline(QObject):
             on_status=lambda text, frac: self._emit(call, text, frac),
             cancelled=cancelled,
             vocabulary=config.vocabulary_terms(cfg),
+            device=cfg.get("whisper_device", "auto"),
+            denoise=bool(cfg.get("denoise")),
         )
+        call.save(whisper_device=transcribe.device_used)
         if len(tracks) > 1 and call.playback_path() is None:
             self._emit(call, "Подготовка записи для прослушивания…", None)
             audio.make_playback(tracks, call.path / "playback.ogg")
@@ -175,21 +180,51 @@ class Pipeline(QObject):
         for sid, (name, _sim) in voices.match(remote, exclude).items():
             call.rename_speaker(sid, name, auto=True, source="voice")
 
+    def _match_calendar(self, call: Call, cfg: dict):
+        """Ищем в календаре встречу, во время которой шла запись: её название и участники."""
+        sources = calendar_ics.urls(cfg)
+        if call.meta.get("source") != "recording" or not sources:
+            return
+        key = hashlib.sha1("\n".join(sources).encode()).hexdigest()[:12]
+        if call.meta.get("calendar_key") == key:
+            return  # уже искали в этих календарях
+        try:
+            event = calendar_ics.find_meeting(cfg, call.created, call.duration)
+        except Exception:  # noqa: BLE001 — календарь необязателен, его ошибки не должны мешать обработке
+            traceback.print_exc()
+            return
+        call.save(calendar=calendar_ics.describe(event) if event else {}, calendar_key=key)
+        if event and not call.meta.get("title_manual"):
+            call.save(title=event.title[:120], title_source="calendar")
+
+    @staticmethod
+    def _bookmarks_note(call: Call) -> str:
+        marks = call.bookmarks()
+        if not marks:
+            return ""
+        items = ", ".join(f"[{transcribe._ts(b['t'])}]" + (f" («{b['note']}»)" if b.get("note") else "")
+                          for b in marks)
+        return ("Во время созвона пользователь отметил важные моменты: " + items + ". После раздела «Кратко» "
+                "добавь раздел «## Отмеченные моменты»: для каждой отметки — её таймкод и что обсуждалось "
+                "в этот момент (отметку обычно ставят через несколько секунд после важной фразы).")
+
     def _name_speakers(self, call: Call, cfg: dict, transcript: str):
-        """Просит Claude узнать имена участников из разговора; уверенные — сразу подставляет."""
+        """Просит модель узнать имена участников из разговора; уверенные — сразу подставляет."""
         names = call.speaker_names()
         defaults = speakers.default_names(list(names))
         unnamed = [sid for sid in names if sid.startswith("S") and names[sid] == defaults[sid]]
         if not unnamed or call.meta.get("names_checked"):
             return
-        self._emit(call, "Claude определяет имена участников…", None)
+        self._emit(call, f"{llm.who(cfg)} определяет имена участников…", None)
+        invited = (call.meta.get("calendar") or {}).get("attendees") or []
+        hint = ("По приглашению из календаря на встрече были: " + ", ".join(invited) + ". Если по разговору "
+                "видно, кто из них говорит под меткой, используй это имя.") if invited else ""
         try:
             found = summarize.identify_speakers(
-                transcript, [defaults[sid] for sid in unnamed],
-                api_key=config.api_key(cfg), model=cfg["claude_model"], effort=cfg["effort"],
-                vocabulary=config.vocabulary_terms(cfg),
+                cfg, transcript, [defaults[sid] for sid in unnamed],
+                vocabulary=config.vocabulary_terms(cfg), hint=hint,
             )
-        except summarize.SummaryError:
+        except llm.LLMError:
             return  # без имён саммари всё равно получится
         by_label = {defaults[sid]: sid for sid in unnamed}
         suggestions = dict(call.meta.get("speaker_suggestions") or {})
@@ -206,6 +241,7 @@ class Pipeline(QObject):
         if not call.paragraphs():
             raise RuntimeError("Транскрипт пустой — сначала распознайте запись.")
         call.save(status="summarizing")
+        self._match_calendar(call, cfg)
         transcript = call.label_transcript()
         self._name_speakers(call, cfg, transcript)
         if cancelled():
@@ -214,20 +250,23 @@ class Pipeline(QObject):
         names = call.speaker_names()
         defaults = speakers.default_names(list(names))
         known = [f"{defaults[sid]} — {names[sid]}" for sid in names if names[sid] != defaults[sid]]
-        note = ("Имена участников (метка в транскрипте — имя): " + "; ".join(known) + ". "
-                "В саммари называй людей по именам.") if known else ""
+        names_note = ("Имена участников (метка в транскрипте — имя): " + "; ".join(known) + ". "
+                      "В саммари называй людей по именам.") if known else ""
 
-        self._emit(call, "Claude пишет саммари…", None)
+        choice = call.meta.get("template_choice") or cfg.get("summary_template") or templates.AUTO
+        self._emit(call, f"{llm.who(cfg)} пишет саммари…", None)
         text = summarize.summarize(
-            transcript,
-            api_key=config.api_key(cfg),
-            model=cfg["claude_model"],
-            effort=cfg["effort"],
-            instructions=cfg["summary_prompt"],
+            cfg, transcript,
+            instructions=templates.instructions(choice, cfg["summary_prompt"], call.created),
             on_text=lambda chunk: self.summary_chunk.emit(call.id, chunk),
             cancelled=cancelled,
-            speaker_note=note,
+            notes=[names_note, calendar_ics.note(call.meta.get("calendar") or {}), self._bookmarks_note(call)],
             vocabulary=config.vocabulary_terms(cfg),
         )
+        text, used = templates.split_marker(text)
         call.write_summary(text)
-        call.save(status="done", summary_model=cfg["claude_model"])
+        call.save(status="done", summary_model=cfg["claude_model"] if llm.backend(cfg) == "claude" else "",
+                  summary_label=llm.model_label(cfg), template=used if choice == templates.AUTO else choice)
+        from . import export
+
+        export.auto_obsidian(call, cfg)

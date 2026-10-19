@@ -1,10 +1,8 @@
-"""Саммари транскрипта и имена участников через Claude API."""
+"""Саммари транскрипта и имена участников — через Claude API или локальную модель (llm.py)."""
 
-import json
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 
-import anthropic
+from . import llm
 
 SYSTEM_PROMPT = """\
 Ты помогаешь человеку разбирать записи его рабочих созвонов: делаешь точные, \
@@ -58,42 +56,7 @@ TIMECODES = (
     "например [00:12:34]: по нему пользователь перейдёт к этому месту записи. Не больше одного таймкода на пункт."
 )
 
-# если модель откажется отвечать по соображениям безопасности,
-# API сам повторит запрос на подходящей запасной модели
-_FALLBACK = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
-
-
-class SummaryError(RuntimeError):
-    pass
-
-
-def _client(api_key: str) -> anthropic.Anthropic:
-    if not api_key:
-        raise SummaryError(
-            "Не задан API-ключ Anthropic. Укажите его в «Настройках» "
-            "(получить ключ: console.anthropic.com → API Keys)."
-        )
-    return anthropic.Anthropic(api_key=api_key)
-
-
-@contextmanager
-def _api_errors(model: str) -> Iterator[None]:
-    try:
-        yield
-    except anthropic.AuthenticationError as e:
-        raise SummaryError("API-ключ не подошёл. Проверьте его в «Настройках».") from e
-    except anthropic.PermissionDeniedError as e:
-        raise SummaryError(f"Нет доступа к модели {model}: {e.message}") from e
-    except anthropic.NotFoundError as e:
-        raise SummaryError(f"Модель {model} не найдена: {e.message}") from e
-    except anthropic.RateLimitError as e:
-        raise SummaryError("Превышен лимит запросов к API. Попробуйте через минуту.") from e
-    except anthropic.BadRequestError as e:
-        raise SummaryError(f"API отклонил запрос: {e.message}") from e
-    except anthropic.APIStatusError as e:
-        raise SummaryError(f"Ошибка API ({e.status_code}): {e.message}") from e
-    except anthropic.APIConnectionError as e:
-        raise SummaryError("Нет соединения с API Anthropic. Проверьте интернет.") from e
+SummaryError = llm.LLMError  # прежнее имя: им пользуются окно и очередь обработки
 
 
 def vocabulary_note(terms: list[str]) -> str:
@@ -103,86 +66,37 @@ def vocabulary_note(terms: list[str]) -> str:
             "ошибки распознавания): " + ", ".join(terms) + ".")
 
 
-def _content(transcript: str, task: str) -> list[dict]:
+def _blocks(transcript: str, task: str) -> list[llm.Block]:
     # Транскрипт — отдельным блоком с кэшированием: запрос имён и саммари идут подряд
     # с одинаковым началом, и второй раз длинный транскрипт оплачивается по сниженной цене.
-    return [
-        {"type": "text", "text": f"<transcript>\n{transcript}\n</transcript>",
-         "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": task},
-    ]
+    return [llm.Block(f"<transcript>\n{transcript}\n</transcript>", cache=True), llm.Block(task)]
 
 
-def identify_speakers(
-    transcript: str, labels: list[str], api_key: str, model: str, effort: str, vocabulary: list[str] = ()
-) -> dict[str, tuple[str, bool]]:
-    """Имена участников по контексту: {метка: (имя, уверенно ли)}."""
-    client = _client(api_key)
-    with _api_errors(model):
-        response = client.beta.messages.create(
-            model=model,
-            max_tokens=16000,
-            **_FALLBACK,
-            thinking={"type": "adaptive"},
-            output_config={"effort": effort, "format": {"type": "json_schema", "schema": NAMES_SCHEMA}},
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": _content(
-                transcript,
-                "\n\n".join(filter(None, [
-                    vocabulary_note(list(vocabulary)),
-                    NAMES_INSTRUCTIONS.format(labels=", ".join(f"«{x}»" for x in labels)),
-                ])),
-            )}],
-        )
-    if response.stop_reason in ("refusal", "max_tokens"):
-        return {}
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return {}
+def identify_speakers(cfg: dict, transcript: str, labels: list[str], vocabulary: list[str] = (),
+                      hint: str = "") -> dict[str, tuple[str, bool]]:
+    """Имена участников по контексту: {метка: (имя, уверенно ли)}. hint — например, список приглашённых."""
+    task = "\n\n".join(filter(None, [
+        vocabulary_note(list(vocabulary)), hint,
+        NAMES_INSTRUCTIONS.format(labels=", ".join(f"«{x}»" for x in labels)),
+    ]))
+    data = llm.complete_json(cfg, SYSTEM_PROMPT, _blocks(transcript, task), NAMES_SCHEMA) or {}
     result = {}
     for item in data.get("speakers", []):
-        label, name = item.get("label", "").strip("«» "), item.get("name", "").strip()
+        if not isinstance(item, dict):
+            continue
+        label, name = str(item.get("label", "")).strip("«» "), str(item.get("name", "")).strip()
         if label in labels and name:
             result[label] = (name, bool(item.get("confident")))
     return result
 
 
-def summarize(
-    transcript: str,
-    api_key: str,
-    model: str,
-    effort: str,
-    instructions: str,
-    on_text: Callable[[str], None],
-    cancelled: Callable[[], bool] = lambda: False,
-    speaker_note: str = "",
-    vocabulary: list[str] = (),
-) -> str:
-    client = _client(api_key)
-    task = "\n\n".join(filter(None, [vocabulary_note(list(vocabulary)), speaker_note, instructions, TIMECODES]))
-    parts: list[str] = []
-    with _api_errors(model):
-        with client.beta.messages.stream(
-            model=model,
-            max_tokens=64000,
-            **_FALLBACK,
-            thinking={"type": "adaptive"},
-            output_config={"effort": effort},
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": _content(transcript, task)}],
-        ) as stream:
-            for text in stream.text_stream:
-                if cancelled():
-                    raise SummaryError("Отменено.")
-                parts.append(text)
-                on_text(text)
-            final = stream.get_final_message()
-
-    if final.stop_reason == "refusal":
-        raise SummaryError("Модель отказалась обрабатывать этот транскрипт.")
-    text = "".join(parts).strip()
-    if final.stop_reason == "max_tokens":
+def summarize(cfg: dict, transcript: str, instructions: str, on_text: Callable[[str], None],
+              cancelled: Callable[[], bool] = lambda: False, notes: list[str] = (),
+              vocabulary: list[str] = ()) -> str:
+    """notes — что ещё знаем о встрече: имена, календарь, отмеченные моменты."""
+    task = "\n\n".join(filter(None, [vocabulary_note(list(vocabulary)), *notes, instructions, TIMECODES]))
+    text, truncated = llm.stream(cfg, SYSTEM_PROMPT, [{"role": "user", "content": _blocks(transcript, task)}],
+                                 on_text, cancelled)
+    if truncated:
         text += "\n\n*(Саммари обрезано: достигнут лимит длины ответа.)*"
     return text

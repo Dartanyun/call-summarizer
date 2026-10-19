@@ -3,7 +3,7 @@
 import html
 import re
 
-from PySide6.QtGui import QColor, QFont, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument
+from PySide6.QtGui import QColor, QFont, QImage, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QTextBrowser
 
 from . import theme
@@ -34,11 +34,12 @@ def strip_title(md: str) -> str:
     return re.sub(r"\A\s*#\s+[^\n]*\n+", "", md)
 
 
-def show_summary(view: QTextBrowser, md: str) -> None:
+def show_summary(view: QTextBrowser, md: str, keep_title: bool = False) -> None:
     doc = view.document()
     doc.setDefaultFont(_base_font())
     doc.setDocumentMargin(26)
-    doc.setMarkdown(linkify_timecodes(strip_title(md)), QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
+    doc.setMarkdown(linkify_timecodes(md if keep_title else strip_title(md)),
+                    QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
 
     sizes = {1: 15.0, 2: 12.5, 3: 11.0}
     block = doc.begin()
@@ -64,6 +65,8 @@ def show_summary(view: QTextBrowser, md: str) -> None:
         cur.mergeBlockFormat(bf)
         first = False
         block = block.next()
+    # курсор — в начало, иначе при первой раскладке окна текст прокрутится к концу
+    view.moveCursor(QTextCursor.MoveOperation.Start)
     view.verticalScrollBar().setValue(0)
 
 
@@ -107,3 +110,97 @@ def show_transcript(view: QTextBrowser, paragraphs: list[dict], names: dict[str,
         f'<div style="font-family:\'{_base_font().family()}\'; font-size:10.5pt">'
         f'<table cellspacing="0" cellpadding="0" width="100%">{"".join(rows)}</table></div>'
     )
+
+
+# ---------------- статистика ----------------
+
+def _dur(sec: float) -> str:
+    s = int(round(sec))
+    if s < 60:
+        return f"{s} с"
+    if s < 3600:
+        return f"{s // 60} мин {s % 60:02d} с" if s < 600 else f"{round(s / 60)} мин"
+    return f"{s // 3600} ч {s % 3600 // 60:02d} мин"
+
+
+def _donut(shares: list[tuple[float, str]], size: int = 172) -> QImage:
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QPainter, QPen
+
+    img = QImage(size * 2, size * 2, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    img.setDevicePixelRatio(2)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    rect = QRectF(16, 16, size - 32, size - 32)
+    total = sum(v for v, _ in shares) or 1.0
+    start = 90 * 16
+    gap = 2 * 16 if len(shares) > 1 else 0
+    for value, color in shares:
+        span = int(-360 * 16 * value / total)
+        pen = QPen(QColor(color), 24)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        p.setPen(pen)
+        p.drawArc(rect, start - gap // 2, span + gap if abs(span) > gap else span)
+        start += span
+    p.end()
+    return img
+
+
+def show_stats(view: QTextBrowser, st, colors: dict[str, str]) -> None:
+    """st — stats.Stats; colors — цвет каждого участника по имени."""
+    from PySide6.QtCore import QUrl
+
+    doc = view.document()
+    doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl("stats:donut"),
+                    _donut([(x.talk, colors.get(x.name, theme.C["accent"])) for x in st.people]))
+    muted, faint, text = theme.C["muted"], theme.C["faint"], theme.C["text"]
+    total = st.talk_total or 1.0
+
+    def card(value: str, label: str) -> str:
+        return (f'<td style="padding:0 26px 0 0"><p style="margin:0; font-size:17pt; font-weight:700">{value}</p>'
+                f'<p style="margin:2px 0 0 0; color:{muted}">{html.escape(label)}</p></td>')
+
+    talk_pct = round(st.talk_total / st.duration * 100) if st.duration else 0
+    cards = "".join([card(_dur(st.duration), "длительность"), card(f"{talk_pct}%", "времени говорили"),
+                     card(str(st.turns), "реплик"), card(str(st.interruptions), "перебиваний")])
+    head = "".join(f'<th align="{a}" style="color:{faint}; font-weight:600; padding:0 14px 6px 0">{h}</th>'
+                   for h, a in (("", "left"), ("Доля", "right"), ("Время", "right"), ("Слов/мин", "right"),
+                                ("Реплик", "right"), ("Перебивал(а)", "right"), ("Самый длинный монолог", "left")))
+    rows = []
+    for x in st.people:
+        color = colors.get(x.name, theme.C["accent"])
+        at = int(x.longest_at)
+        when = f"{at // 3600}:{at % 3600 // 60:02d}:{at % 60:02d}" if at >= 3600 else f"{at // 60}:{at % 60:02d}"
+        mono = (f'<a href="t:{x.longest_at}" style="color:{theme.C["accent"]}; text-decoration:none">'
+                f"{when} · {_dur(x.longest)}</a>") if x.longest else "—"
+        cells = [f'<span style="color:{color}">●</span>&nbsp; <b>{html.escape(x.name)}</b>',
+                 f"{round(x.talk / total * 100)}%", _dur(x.talk), str(x.wpm or "—"), str(x.turns),
+                 str(x.interruptions), mono]
+        rows.append("<tr>" + "".join(
+            f'<td align="{"left" if i in (0, 6) else "right"}" style="padding:5px 14px 5px 0">{c}</td>'
+            for i, c in enumerate(cells)) + "</tr>")
+    fillers = []
+    for x in st.people:
+        top = x.fillers.most_common(4)
+        if top:
+            words = ", ".join(f"«{w}» ×{n}" for w, n in top)
+            fillers.append(f'<p style="margin:0 0 6px 0"><b>{html.escape(x.name)}:</b> {html.escape(words)}</p>')
+    chips = " ".join(f'<span style="color:{text}">{html.escape(w)}</span>'
+                     f'<span style="color:{faint}"> {n}</span>&nbsp;&nbsp;' for w, n in st.top_words)
+
+    def h(title: str) -> str:
+        return f'<p style="margin:22px 0 8px 0; font-size:12.5pt; font-weight:700">{title}</p>'
+
+    body = (f'<table cellspacing="0" cellpadding="0"><tr>{cards}</tr></table>'
+            + h("Кто сколько говорил")
+            + '<table cellspacing="0" cellpadding="0"><tr><td valign="middle" style="padding-right:22px">'
+              '<img src="stats:donut" width="172" height="172"></td><td valign="middle">'
+              f'<table cellspacing="0" cellpadding="0"><tr>{head}</tr>{"".join(rows)}</table></td></tr></table>'
+            + (h("Слова-паразиты") + "".join(fillers) if fillers else "")
+            + (h("Чаще всего звучало") + f"<p>{chips}</p>" if chips else "")
+            + f'<p style="margin-top:22px; color:{faint}">Время считается по распознанным репликам; '
+              "«перебивал(а)» — вступил(а), когда другой ещё не закончил фразу. Тишина и паузы — "
+              f"{_dur(st.silence)}.</p>")
+    doc.setDocumentMargin(26)
+    view.setHtml(f'<div style="font-family:\'{_base_font().family()}\'; font-size:10.5pt">{body}</div>')

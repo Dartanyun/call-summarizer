@@ -15,6 +15,9 @@ dependencies = [
     "anthropic>=1.15",
     "sherpa-onnx>=1.12",
     "numpy",
+    # календарь iCal: встречи, в том числе повторяющиеся
+    "icalendar>=6",
+    "recurring-ical-events>=3",
     # только Windows: запись через WASAPI и ffmpeg внутри пакета
     "soundcard>=0.4.4; sys_platform == 'win32'",
     "imageio-ffmpeg>=0.5; sys_platform == 'win32'",
@@ -30,7 +33,7 @@ packages = ["callsum"]
 version = { attr = "callsum.__version__" }
 
 [tool.setuptools.package-data]
-callsum = ["*.svg", "icons/*.svg", "icons/tray/*.svg"]
+callsum = ["*.svg", "icons/*.svg", "icons/tray/*.svg", "help/*.md"]
 
 [tool.ruff]
 target-version = "py310"

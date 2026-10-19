@@ -275,6 +275,10 @@ class Segmented(QFrame):
     def set_index(self, i: int):
         self.group.button(i).setChecked(True)
 
+    @property
+    def index(self) -> int:
+        return self.group.checkedId()
+
 
 def icon_button(name: str, tooltip: str, slot=None, size: int = 18) -> QToolButton:
     b = QToolButton()

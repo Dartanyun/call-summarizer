@@ -12,9 +12,10 @@ from . import __version__, config, osdeps, theme
 
 # своя «почта» у каждой папки настроек: тестовая копия не достучится до основной
 SERVER_NAME = f"{config.APP_ID}-{osdeps.user_id()}-{hashlib.md5(str(config.CONFIG_DIR).encode()).hexdigest()[:8]}"
-USAGE = """call-summarizer [--hidden] [--toggle] [--version] [--self-check [--full] [--report ФАЙЛ]]
+USAGE = """call-summarizer [--hidden] [--toggle] [--bookmark] [--version] [--self-check [--full] [--report ФАЙЛ]]
   --hidden      запуститься свёрнутым в системный трей
   --toggle      начать или остановить запись (для горячей клавиши)
+  --bookmark    отметить важный момент в идущей записи (для горячей клавиши)
   --version     показать версию
   --self-check  проверить, что всё нужное для работы на месте (--full — с пробным распознаванием)"""
 
@@ -66,7 +67,7 @@ def main():
         from .selfcheck import run
 
         return run(args)
-    command = "toggle" if "--toggle" in args else "show"
+    command = "toggle" if "--toggle" in args else "bookmark" if "--bookmark" in args else "show"
     hidden = "--hidden" in args
 
     if osdeps.IS_WIN:
@@ -88,6 +89,8 @@ def main():
 
     if _send_to_running(command):
         return 0
+    if command == "bookmark":
+        return 0  # программа не запущена — значит, и записи нет: отмечать нечего
     if no_console:
         _log_to_file()
 

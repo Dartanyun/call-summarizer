@@ -11,29 +11,60 @@ from . import osdeps
 SAMPLE_RATE = 16000
 
 _model = None
-_model_name = None
+_model_key = None
+device_used = ""  # где работает модель: "cpu" или "cuda" (для подписи в окне)
 
 
 class Cancelled(Exception):
     pass
 
 
-def _load_model(name: str):
-    global _model, _model_name
-    if _model_name != name:
+def cuda_available() -> bool:
+    try:
+        import ctranslate2
+
+        return ctranslate2.get_cuda_device_count() > 0
+    except (ImportError, RuntimeError, OSError):
+        return False
+
+
+def _load_model(name: str, device: str = "auto"):
+    """device: auto — видеокарта NVIDIA, если она есть и для неё стоят библиотеки CUDA, иначе процессор."""
+    global _model, _model_key, device_used
+    want = "cuda" if device == "cuda" or (device == "auto" and cuda_available()) else "cpu"
+    if _model_key != (name, want):
         from faster_whisper import WhisperModel
 
         _model = None  # освобождаем память от предыдущей модели
+        if want == "cuda":
+            try:
+                model = WhisperModel(name, device="cuda", compute_type="float16")
+                # библиотеки CUDA (cuBLAS, cuDNN) подгружаются только при работе — проверяем сразу
+                list(model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="ru")[0])
+                _model, _model_key, device_used = model, (name, want), "cuda"
+                return _model
+            except (RuntimeError, OSError, ValueError) as e:
+                if device == "cuda":
+                    raise RuntimeError(
+                        "Не получилось распознавать на видеокарте: нет драйвера NVIDIA или библиотек CUDA "
+                        "(cuBLAS 12, cuDNN 9). Выберите в настройках «Процессор» или см. справку → «Видеокарта».") from e
+                want = "cpu"
         threads = max(1, (os.cpu_count() or 4) - 2)
         _model = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=threads)
-        _model_name = name
+        _model_key, device_used = (name, want), "cpu"
     return _model
 
 
-def decode(path: Path) -> np.ndarray:
+# Шумоподавление: срезаем гул ниже 80 Гц и убираем постоянный шум (вентилятор, улица).
+# Длительность не меняется, так что таймкоды остаются точными.
+DENOISE_FILTER = "highpass=f=80,afftdn=nr=12:nf=-30:tn=1"
+
+
+def decode(path: Path, denoise: bool = False) -> np.ndarray:
     # системный ffmpeg вместо PyAV: не зависим от несовместимых версий av
     r = osdeps.run(
         [osdeps.ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
+         *(["-af", DENOISE_FILTER] if denoise else []),
          "-f", "f32le", "-ac", "1", "-ar", str(SAMPLE_RATE), "pipe:1"],
         capture_output=True,
     )
@@ -57,6 +88,8 @@ def transcribe(
     on_status: Callable[[str, float | None], None],
     cancelled: Callable[[], bool] = lambda: False,
     vocabulary: list[str] = (),
+    device: str = "auto",
+    denoise: bool = False,
 ) -> list[dict]:
     """Распознаёт созвон и возвращает слова с таймкодами: [{"s": начало, "e": конец, "w": " слово"}].
 
@@ -64,12 +97,12 @@ def transcribe(
     Дорожки смешиваются: так речь не задваивается, даже если микрофон слышит колонки.
     on_status(текст, доля 0..1 или None для неопределённого прогресса).
     """
-    if _model_name != model_name:
+    if not _model_key or _model_key[0] != model_name:
         on_status(f"Загрузка модели {model_name} (в первый раз она скачивается, это может занять несколько минут)…", None)
-    model = _load_model(model_name)
+    model = _load_model(model_name, device)
 
-    on_status("Подготовка звука…", None)
-    decoded = [a for a in (decode(p) for p in tracks.values()) if a.size > SAMPLE_RATE // 2]
+    on_status("Подготовка звука" + (" и шумоподавление…" if denoise else "…"), None)
+    decoded = [a for a in (decode(p, denoise) for p in tracks.values()) if a.size > SAMPLE_RATE // 2]
     if not decoded:
         raise RuntimeError("В записи нет звука.")
     audio = mix(decoded)
