@@ -8,6 +8,8 @@
 
 ## [Не выпущено]
 
+## [1.2.0] — 2026-10-20
+
 ### Добавлено
 
 - Готовые сборки — Python и все библиотеки уже внутри, ничего докачивать не нужно. Для Windows —
@@ -59,6 +61,7 @@
 - Необязательная автоочистка старых аудиозаписей.
 - Светлая и тёмная тема, иконка приложения.
 
-[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.1.0...HEAD
+[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Dartanyun/call-summarizer/releases/tag/v1.0.0
