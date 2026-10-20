@@ -303,11 +303,13 @@ def run(args: list[str]) -> int:
         def https():
             import anthropic
 
+            # прокси из настроек — как у работающей программы
+            proxy = osdeps.apply_proxy(config.load().get("proxy", ""))
             # запрос без настоящего ключа: ответ «неверный ключ» значит, что соединение HTTPS работает
             try:
                 anthropic.Anthropic(api_key="self-check", max_retries=0).models.list()
             except anthropic.AuthenticationError:
-                return "api.anthropic.com отвечает"
+                return "api.anthropic.com отвечает" + (f" через прокси {osdeps.proxy_label(proxy)}" if proxy else "")
             raise AssertionError("неожиданный ответ")
 
         check("соединение с Claude API", https)

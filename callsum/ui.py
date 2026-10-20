@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from . import (
-    audio, callwatch, config, digest, export, llm, render, sections, speakers, stats, storage, templates, theme, voices,
+    audio, callwatch, config, digest, export, llm, osdeps, render, sections, speakers, stats, storage, templates, theme,
+    voices,
 )
 from .ask_view import AskPage, DigestPage
 from .pipeline import Pipeline
@@ -83,6 +84,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app_icon = app_icon
         self.cfg = config.load()
+        self.apply_proxy()
         self.calls: dict[str, storage.Call] = {}
         self.recorder: audio.Recorder | None = None
         self.recording_call: storage.Call | None = None
@@ -1969,6 +1971,12 @@ class MainWindow(QMainWindow):
 
     # ================= настройки и выход =================
 
+    def apply_proxy(self):
+        try:
+            osdeps.apply_proxy(self.cfg.get("proxy", ""))
+        except ValueError as e:  # в файле настроек руками вписан неправильный адрес
+            print(f"прокси из настроек не применён: {e.__class__.__name__}", file=sys.stderr)
+
     def open_settings(self, page: str = ""):
         dlg = SettingsDialog(self.cfg, self, page)
         if dlg.exec():
@@ -1976,6 +1984,7 @@ class MainWindow(QMainWindow):
             old_days = self.cfg.get("audio_retention_days")
             self.cfg = dlg.result_config()
             config.save(self.cfg)
+            self.apply_proxy()
             if self.cfg.get("theme", "system") != old_theme:
                 self.apply_theme()
             self.apply_silent_settings()

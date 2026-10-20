@@ -103,5 +103,100 @@ def fix_ssl_certs() -> None:
             return
 
 
+# ---------------- прокси ----------------
+
+PROXY_SCHEMES = ("http", "https", "socks5", "socks5h", "socks4")
+_PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+               "http_proxy", "https_proxy", "all_proxy", "no_proxy")
+# как было до программы: пустой прокси в настройках возвращает системный
+_proxy_env_before = {k: os.environ.get(k) for k in _PROXY_VARS}
+_LOCAL_HOSTS = "localhost,127.0.0.1,::1"  # Ollama и прочее на этом компьютере — всегда напрямую
+
+
+def normalize_proxy(text: str) -> str:
+    """«127.0.0.1:10809» → «http://127.0.0.1:10809». Пустая строка — без прокси.
+    Неправильный адрес — ValueError с понятным текстом."""
+    from urllib.parse import urlsplit
+
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "http://" + text
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError as e:
+        raise ValueError(f"Не понял адрес прокси «{text}»: {e}") from e
+    if parts.scheme.lower() not in PROXY_SCHEMES:
+        raise ValueError(f"Прокси должен начинаться с {', '.join(s + '://' for s in PROXY_SCHEMES)}")
+    if not parts.hostname or not port:
+        raise ValueError("Укажите адрес и порт прокси, например http://127.0.0.1:10809")
+    return text
+
+
+def proxy_label(url: str) -> str:
+    """Адрес прокси для показа — без пароля."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.password is None:
+        return url
+    return parts._replace(netloc=f"{parts.username}:***@{parts.netloc.rsplit('@', 1)[1]}").geturl()
+
+
+def apply_proxy(text: str) -> str:
+    """Прокси из настроек — для всех запросов программы в интернет: Claude API, загрузка моделей,
+    обновления, календари, трекеры. Ставим его в переменные окружения процесса: их читают и
+    клиент Anthropic, и загрузчик моделей Whisper, и urllib. HTTP-прокси работает везде;
+    SOCKS понимают только Claude API и загрузка Whisper (urllib его не умеет) — остальное идёт
+    напрямую. Возвращает применённый адрес ("" — без прокси); неправильный адрес — ValueError."""
+    import urllib.request
+
+    url = normalize_proxy(text)
+    for key, value in _proxy_env_before.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    if url:
+        http_keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+        if url.lower().startswith("socks"):
+            for key in http_keys:  # иначе системный HTTP-прокси перебил бы наш: он точнее ALL_PROXY
+                os.environ.pop(key, None)
+            keys: tuple[str, ...] = ("ALL_PROXY", "all_proxy")
+        else:
+            keys = http_keys
+        for key in keys:
+            os.environ[key] = url
+        no = [h for h in (_proxy_env_before.get("NO_PROXY") or "").split(",") if h.strip()]
+        os.environ["NO_PROXY"] = os.environ["no_proxy"] = ",".join([*no, _LOCAL_HOSTS])
+    # urllib запоминает прокси при первом запросе — пусть при следующем прочитает заново
+    urllib.request.install_opener(None)
+    return url
+
+
+def check_proxy(text: str, url: str = "https://api.anthropic.com/v1/models", timeout: float = 15) -> str:
+    """Доходит ли запрос через этот прокси (или напрямую, если он пустой) до Claude API."""
+    import httpx2
+
+    proxy = normalize_proxy(text)
+    try:
+        with httpx2.Client(proxy=proxy or None, trust_env=not proxy, timeout=timeout) as client:
+            r = client.get(url)
+    except ImportError as e:  # SOCKS без пакета socksio
+        raise RuntimeError(f"для SOCKS-прокси не хватает пакета socksio ({e})") from e
+    except httpx2.TimeoutException as e:
+        raise RuntimeError(f"нет ответа за {timeout:.0f} с — прокси не отвечает или не пускает к сайту") from e
+    except httpx2.HTTPError as e:
+        text = str(e) or e.__class__.__name__
+        if "407" in text or "NO ACCEPTABLE METHODS" in text.upper():
+            raise RuntimeError("прокси требует логин и пароль — укажите их в адресе: "
+                               "http://логин:пароль@адрес:порт") from e
+        raise RuntimeError(text) from e
+    how = f"через прокси {proxy_label(proxy)}" if proxy else "напрямую"
+    return f"{r.url.host} отвечает {how} (код {r.status_code})"
+
+
 def user_id() -> str:
     return str(os.getuid()) if hasattr(os, "getuid") else getpass.getuser()
