@@ -8,6 +8,8 @@
 
 ## [Не выпущено]
 
+## [1.5.1] — 2026-10-20
+
 ### Исправлено
 
 - Программу больше нельзя запустить несколько раз: вторая копия, запущенная, пока первая ещё
@@ -191,7 +193,8 @@
 - Необязательная автоочистка старых аудиозаписей.
 - Светлая и тёмная тема, иконка приложения.
 
-[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.5.0...HEAD
+[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.0...v1.4.1
