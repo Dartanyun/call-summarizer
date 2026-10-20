@@ -8,6 +8,8 @@
 
 ## [Не выпущено]
 
+## [1.4.1] — 2026-10-20
+
 ### Исправлено
 
 - Windows: «Запись прервалась: Микрофон: invalid argument». Так бывало с микрофонами-массивами
@@ -141,7 +143,8 @@
 - Необязательная автоочистка старых аудиозаписей.
 - Светлая и тёмная тема, иконка приложения.
 
-[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.0...HEAD
+[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.2.0...v1.3.0
