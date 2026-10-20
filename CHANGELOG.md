@@ -8,6 +8,8 @@
 
 ## [Не выпущено]
 
+## [1.4.2] — 2026-10-20
+
 ### Исправлено
 
 - Windows: «Микрофон: Error 0x100000001» и «Собеседники: module 'soundcard' has no attribute
@@ -154,7 +156,8 @@
 - Необязательная автоочистка старых аудиозаписей.
 - Светлая и тёмная тема, иконка приложения.
 
-[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.1...HEAD
+[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.0...v1.3.1
