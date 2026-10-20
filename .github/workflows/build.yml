@@ -122,6 +122,14 @@ jobs:
           if (-not (Wait-App)) { throw "После обновления программа не запустилась снова" }
           Stop-Process -Name CallSummarizer -Force; Start-Sleep 2
 
+          # одна копия: три запуска подряд, пока первая ещё загружается, — работать должна одна
+          1..3 | ForEach-Object { Start-Process $app; Start-Sleep -Milliseconds 300 }
+          Start-Sleep 25
+          $copies = @(Get-Process CallSummarizer -ErrorAction SilentlyContinue).Count
+          Write-Host "Запущено копий: $copies"
+          Stop-Process -Name CallSummarizer -Force -ErrorAction SilentlyContinue; Start-Sleep 2
+          if ($copies -ne 1) { throw "Должна работать одна копия программы, а работает $copies" }
+
           Start-Process (Join-Path $dir "unins000.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
           # деинсталлятор перезапускает себя из временной папки — ждём, пока он закончит
           for ($i = 0; $i -lt 60 -and (Test-Path $app); $i++) { Start-Sleep 1 }

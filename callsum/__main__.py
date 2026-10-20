@@ -1,9 +1,10 @@
 import hashlib
 import os
 import sys
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+from PySide6.QtCore import QLibraryInfo, QLocale, QLockFile, QTranslator
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
@@ -52,6 +53,29 @@ def _log_to_file():
     sys.stdout = sys.stderr = log
 
 
+def _single_instance(command: str) -> QLockFile | None:
+    """Только одна копия программы. Замок захватывается в самом начале запуска: собранная
+    программа загружается несколько секунд, и раньше вторая копия, запущенная в это время
+    (повторный щелчок по ярлыку, автозапуск), не находила первую и запускалась тоже.
+
+    None — программа уже работает (или ещё загружается): команда передана ей, этой копии
+    нужно выйти."""
+    config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(config.CONFIG_DIR / "instance.lock"))
+    lock.setStaleLockTime(0)  # замок освобождается только вместе с процессом, который его держит
+    if lock.tryLock(0):
+        return lock
+    # первая копия ещё загружается — ждём, пока она начнёт принимать команды
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if _send_to_running(command):
+            return None
+        if lock.tryLock(0):
+            return lock  # та копия закрылась, так и не открывшись, — работаем сами
+        time.sleep(0.3)
+    return None
+
+
 def main():
     args = sys.argv[1:]
     no_console = _quiet_stdio()
@@ -87,8 +111,12 @@ def main():
     app.setDesktopFileName(config.APP_ID)
     app.setQuitOnLastWindowClosed(False)
 
-    if _send_to_running(command):
+    lock = _single_instance(command)
+    if lock is None:
         return 0
+    app._instance_lock = lock  # замок держится, пока работает программа
+    if _send_to_running(command):
+        return 0  # работает старая версия без замка — она и покажет окно
     if command == "bookmark":
         return 0  # программа не запущена — значит, и записи нет: отмечать нечего
     if no_console:

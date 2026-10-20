@@ -23,9 +23,17 @@ jobs:
       - name: Виртуальная звуковая карта (VB-CABLE)
         uses: LABSN/sound-ci-helpers@e9d6ba52163a3283714a68412036ddf33f78d49c
 
-      - name: Служба «Windows Audio»
+      - name: Служба «Windows Audio» и доступ к микрофону
         shell: pwsh
         run: |
+          # на серверной Windows доступ классических приложений к микрофону выключен (0x80070005)
+          $key = "Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
+          foreach ($root in "HKLM:", "HKCU:") {
+            New-Item -Path "$root\$key" -Force | Out-Null
+            Set-ItemProperty -Path "$root\$key" -Name Value -Value "Allow"
+          }
+          New-Item -Path "HKCU:\$key\NonPackaged" -Force | Out-Null
+          Set-ItemProperty -Path "HKCU:\$key\NonPackaged" -Name Value -Value "Allow"
           Set-Service Audiosrv -StartupType Automatic
           Restart-Service AudioEndpointBuilder -Force -ErrorAction SilentlyContinue
           Start-Service Audiosrv
