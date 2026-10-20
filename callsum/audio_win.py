@@ -8,10 +8,12 @@
 """
 
 import ctypes
+import struct
 import subprocess
 import sys
 import threading
 import time
+import uuid
 import warnings
 from pathlib import Path
 
@@ -77,8 +79,59 @@ def _sc():
     with _import_lock:
         import soundcard
 
+        if sys.platform == "win32":
+            _fix_format(soundcard.mediafoundation)
     warnings.filterwarnings("ignore", message="data discontinuity")
     return soundcard
+
+
+# KSDATAFORMAT_SUBTYPE_IEEE_FLOAT и стандартные раскладки колонок (KSAUDIO_SPEAKER_*)
+_IEEE_FLOAT = uuid.UUID("00000003-0000-0010-8000-00aa00389b71").bytes_le
+_MASKS = {1: 0x4, 2: 0x3, 3: 0x7, 4: 0x33, 5: 0x37, 6: 0x3F, 7: 0x13F, 8: 0x63F}
+
+
+def _fix_format(mf) -> None:
+    """Исправляем, как soundcard описывает формат звука для Windows.
+
+    soundcard объявляет WAVEFORMATEXTENSIBLE для cffi без упаковки, а в Windows структура упакована
+    (#pragma pack(1)): у soundcard поля после первых 18 байт сдвинуты. Записывая «32 бита точности»,
+    она на самом деле затирает маску каналов, и маска перестаёт совпадать с числом каналов. Старые
+    сборки Windows это прощали, новые отвергают — «invalid argument» при любом формате. Здесь формат
+    собирается побайтно, по настоящей раскладке, с маской каналов устройства."""
+    if getattr(mf._AudioClient, "_callsum_fixed", False):
+        return
+
+    def init(self, ptr, samplerate, channels, blocksize, isloopback, exclusive_mode=False):
+        self._ptr = ptr
+        self.channelmap = list(range(channels)) if isinstance(channels, int) else list(channels)
+        if blocksize is None:
+            blocksize = self.deviceperiod[0] * samplerate
+        pp = mf._ffi.new("WAVEFORMATEXTENSIBLE**")
+        mf._com.check_error(ptr[0][0].lpVtbl.GetMixFormat(ptr[0], pp))
+        try:
+            raw = bytes(mf._ffi.buffer(pp[0], 40))
+        finally:
+            mf._ole32.CoTaskMemFree(pp[0])
+        tag, mix_channels, _rate, _avg, _align, _bits, extra = struct.unpack_from("<HHIIHHH", raw, 0)
+        mix_mask = struct.unpack_from("<I", raw, 20)[0] if tag == 0xFFFE and extra >= 22 else 0
+        ch = len(set(self.channelmap))
+        mask = mix_mask if ch == mix_channels and bin(mix_mask).count("1") == ch else _MASKS.get(ch, 0)
+        rate = int(samplerate)
+        fmt = bytearray(40)
+        struct.pack_into("<HHIIHHHHI", fmt, 0, 0xFFFE, ch, rate, rate * ch * 4, ch * 4, 32, 22, 32, mask)
+        fmt[24:40] = _IEEE_FLOAT
+        self._format = mf._ffi.new("char[]", bytes(fmt))  # память нужна, пока жив клиент
+        # перевод формата и частоты — силами Windows (autoconvert + хороший ресемплер), без «persist»
+        flags = 0x80000000 | 0x08000000 | 0x00080000 | (0x00020000 if isloopback else 0)
+        mode = mf._ole32.AUDCLNT_SHAREMODE_EXCLUSIVE if exclusive_mode else mf._ole32.AUDCLNT_SHAREMODE_SHARED
+        hr = ptr[0][0].lpVtbl.Initialize(ptr[0], mode, flags, int(blocksize / samplerate * 10_000_000), 0,
+                                         mf._ffi.cast("WAVEFORMATEXTENSIBLE*", self._format), mf._ffi.NULL)
+        mf._com.check_error(hr)
+        self.samplerate = samplerate
+        self._idle_start_time = None
+
+    mf._AudioClient.__init__ = init
+    mf._AudioClient._callsum_fixed = True
 
 
 def list_sources() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:

@@ -1,0 +1,42 @@
+# Запись через настоящий WASAPI: на машину ставится виртуальная звуковая карта VB-CABLE
+# (LABSN/sound-ci-helpers — так звук проверяют в MNE и python-sounddevice), и программа пишет
+# микрофон и «петлю», пока в виртуальный динамик играет тон.
+name: Windows audio
+
+on:
+  push:
+    branches: ["fix/**"]
+    paths: ["callsum/audio*.py", "tests/windows_wasapi.py", ".github/workflows/windows-audio.yml"]
+  workflow_dispatch:
+
+jobs:
+  wasapi:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Виртуальная звуковая карта (VB-CABLE)
+        uses: LABSN/sound-ci-helpers@e9d6ba52163a3283714a68412036ddf33f78d49c
+
+      - name: Служба «Windows Audio»
+        shell: pwsh
+        run: |
+          Set-Service Audiosrv -StartupType Automatic
+          Restart-Service AudioEndpointBuilder -Force -ErrorAction SilentlyContinue
+          Start-Service Audiosrv
+          Get-Service Audiosrv, AudioEndpointBuilder | Format-Table Name, Status
+          Get-CimInstance Win32_SoundDevice | Format-Table Name, Status
+          (Get-CimInstance Win32_OperatingSystem).Caption + " " + (Get-CimInstance Win32_OperatingSystem).BuildNumber
+
+      - name: Библиотеки
+        run: python -m pip install --quiet .
+
+      - name: Запись через WASAPI
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tests/windows_wasapi.py
