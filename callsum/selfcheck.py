@@ -107,6 +107,63 @@ def run(args: list[str]) -> int:
 
     check("кодирование в Opus", opus)
 
+    def recorder_pipe():
+        """Запись дорожки целиком, как во время созвона, — только вместо устройства пробный звук.
+        Папка — с кириллицей в имени, как бывает у профилей Windows."""
+        import time
+
+        import numpy as np
+
+        from . import audio_win
+
+        class Rec:
+            t = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def record(self, numframes):
+                time.sleep(numframes / audio_win.SAMPLE_RATE)
+                n = np.arange(self.t, self.t + numframes)
+                self.t += numframes
+                return (0.2 * np.sin(2 * np.pi * 440 * n / audio_win.SAMPLE_RATE)).astype(np.float32)[:, None]
+
+        class Source:
+            channels = 1
+
+            def recorder(self, **_kw):
+                return Rec()
+
+        class FakeSoundcard:
+            @staticmethod
+            def get_microphone(_id, include_loopback=False):
+                return Source()
+
+        real = audio_win._sc
+        audio_win._sc = lambda: FakeSoundcard
+        try:
+            folder = tmp / "Проверка записи"
+            folder.mkdir()
+            out = folder / "mic.seg0.ogg"
+            tr = audio_win.TrackRecorder("проба", out, "Микрофон", "mic")
+            tr.start()
+            time.sleep(1.5)
+            err = tr.error()
+            tr.stop()
+            assert not err, err
+            from . import audio
+
+            secs = audio.probe_duration(out)
+            assert secs > 1.0, f"записалось {secs:.2f} с"
+            return f"{secs:.1f} с в Ogg/Opus, уровень {tr.peak_seen:.2f}"
+        finally:
+            audio_win._sc = real
+
+    check("запись дорожки (ffmpeg, пробный звук)", recorder_pipe, required=osdeps.IS_WIN)
+
     if osdeps.IS_WIN:
         def wasapi():
             import soundcard

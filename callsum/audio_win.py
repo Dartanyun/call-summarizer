@@ -99,10 +99,17 @@ class TrackRecorder:
                     mono = data.mean(axis=1) if data.ndim == 2 else data
                     self.level = level_of(mono)
                     self.peak_seen = max(self.peak_seen, self.level)
-                    self._enc.stdin.write(np.ascontiguousarray(mono, dtype="<f4").tobytes())
+                    try:
+                        self._enc.stdin.write(np.ascontiguousarray(mono, dtype="<f4").tobytes())
+                    except OSError:
+                        # ffmpeg закрылся; Windows сообщает об этом как «[Errno 22] Invalid argument» —
+                        # настоящая причина в выводе самого ffmpeg
+                        if not self._stop.is_set():
+                            self._error = self._encoder_message()
+                        return
         except Exception as e:  # noqa: BLE001 — показываем пользователю любую ошибку устройства
             if not self._stop.is_set():
-                self._error = str(e) or e.__class__.__name__
+                self._error = f"{e.__class__.__name__}: {e}" if str(e) else e.__class__.__name__
         finally:
             self.level = 0.0
             try:
@@ -112,12 +119,27 @@ class TrackRecorder:
             if ole32:
                 ole32.CoUninitialize()
 
+    def _encoder_message(self) -> str:
+        """Почему закрылся ffmpeg: его собственные слова или код выхода."""
+        try:
+            self._enc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            return "ffmpeg перестал принимать звук"
+        err = ""
+        if self._enc.stderr:
+            try:
+                err = (self._enc.stderr.read() or b"").decode(errors="replace").strip()
+            except (OSError, ValueError):
+                pass
+        if not err:
+            return f"ffmpeg неожиданно завершился (код {self._enc.returncode})"
+        return f"ffmpeg: {err.splitlines()[-1]}"
+
     def error(self) -> str | None:
         if self._error:
             return self._error
         if self._enc and self._enc.poll() not in (None, 0) and not self._stop.is_set():
-            err = (self._enc.stderr.read() or b"").decode(errors="replace").strip() if self._enc.stderr else ""
-            return err or f"ffmpeg завершился с кодом {self._enc.returncode}"
+            return self._encoder_message()
         return None
 
     def request_stop(self):
