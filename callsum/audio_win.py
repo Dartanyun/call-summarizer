@@ -9,7 +9,9 @@
 
 import ctypes
 import subprocess
+import sys
 import threading
+import time
 import warnings
 from pathlib import Path
 
@@ -21,9 +23,50 @@ from .audio_base import AudioError, level_of
 SAMPLE_RATE = 48000
 BLOCK = SAMPLE_RATE // 20  # 50 мс — и для индикатора, и для записи
 RATES = (48000, 44100, 16000)
+STALL = 10.0  # столько секунд без звука от Windows считаем зависанием
 
 
 _import_lock = threading.Lock()
+
+
+# ошибки soundcard, после которых есть смысл попробовать другой формат
+_FORMAT_ERRORS = ("invalid argument", "unsupported format")
+_SERVICE_DOWN = ("Похоже, служба «Windows Audio» не работает или перезапускается. Перезапустите её "
+                 "(«Службы» → «Windows Audio» → «Перезапустить») или перезагрузите компьютер.")
+# антивирусы с «защитой микрофона» встраиваются в звук Windows и отвечают программам отказом
+_ANTIVIRUS = (" Если стоит антивирус с защитой микрофона (например, Kaspersky), разрешите в нём доступ "
+              "к микрофону для «Саммари созвонов» или Python.")
+# коды WASAPI/COM → что сказать человеку (soundcard пишет их как «Error 0x…»)
+_HRESULTS = {
+    "0x88890004": "Устройство отключилось или сменилось. Подключите его снова или выберите другое "
+                  "в «Настройках» → «Запись».",
+    "0x80070490": "Устройство не найдено — возможно, оно отключено. Выберите другое в «Настройках» → «Запись».",
+    "0x8889000a": "Устройство занято другой программой в монопольном режиме. Закройте её или снимите "
+                  "в свойствах устройства галочку «Разрешить приложениям монопольный режим».",
+    "0x80070005": "Windows не даёт программам доступ к микрофону. Включите его: «Параметры» → "
+                  "«Конфиденциальность и защита» → «Микрофон» → «Разрешить классическим приложениям»." + _ANTIVIRUS,
+    "0x88890010": _SERVICE_DOWN,
+    "0x800706cc": _SERVICE_DOWN,
+    "0x800706ba": _SERVICE_DOWN,
+    "0x80040154": _SERVICE_DOWN,
+}
+
+
+def _explain(e: Exception) -> str:
+    text = str(e) or e.__class__.__name__
+    if text in _FORMAT_ERRORS:
+        return ("Windows не дала открыть устройство в подходящем формате (invalid argument). "
+                "Попробуйте выбрать другое устройство в «Настройках» → «Запись»." + _ANTIVIRUS)
+    code = text.removeprefix("Error ").lower()
+    return f"{_HRESULTS[code]} (код {code})" if code in _HRESULTS else text
+
+
+def _log(line: str) -> None:
+    """В консоль, а у программы без консоли — в app.log (см. __main__._log_to_file)."""
+    try:
+        print(f"[запись] {line}", file=sys.stderr, flush=True)
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 def _sc():
@@ -45,7 +88,7 @@ def list_sources() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         mics = [(m.id, m.name) for m in sc.all_microphones()]
         outputs = [(s.id, s.name) for s in sc.all_speakers()]
     except Exception as e:  # noqa: BLE001 — любая ошибка WASAPI
-        raise AudioError(f"Не удалось получить список звуковых устройств: {e}") from e
+        raise AudioError(f"Не удалось получить список звуковых устройств: {_explain(e)}") from e
     return mics, outputs
 
 
@@ -53,14 +96,14 @@ def default_mic() -> str:
     try:
         return _sc().default_microphone().id
     except Exception as e:  # noqa: BLE001
-        raise AudioError(f"Не найден микрофон по умолчанию: {e}") from e
+        raise AudioError(f"Не найден микрофон по умолчанию: {_explain(e)}") from e
 
 
 def default_monitor() -> str:
     try:
         return _sc().default_speaker().id
     except Exception as e:  # noqa: BLE001
-        raise AudioError(f"Не найдено устройство вывода по умолчанию: {e}") from e
+        raise AudioError(f"Не найдено устройство вывода по умолчанию: {_explain(e)}") from e
 
 
 class TrackRecorder:
@@ -77,14 +120,17 @@ class TrackRecorder:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._error: str | None = None
+        self.format = ""
+        self._alive = self._checked = time.monotonic()
 
     def start(self):
         try:
             _sc()  # загрузка — здесь, в главном потоке (см. _sc), а не в потоке записи
         except Exception as e:  # noqa: BLE001 — любая ошибка WASAPI
-            raise AudioError(f"Не удалось подготовить запись звука: {e}") from e
+            raise AudioError(f"Не удалось подготовить запись звука: {_explain(e)}") from e
         # устройство открывается в своём потоке (там свой COM), ffmpeg запускается уже под его формат
         self.format = ""
+        self._alive = self._checked = time.monotonic()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -97,23 +143,59 @@ class TrackRecorder:
         return osdeps.popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     @staticmethod
-    def _open(source):
+    def _mix_format(source) -> tuple[int, int] | None:
+        """(частота, каналы), в которых Windows сама смешивает звук устройства. Поток ровно в этом
+        формате общий режим WASAPI принимает всегда, без всяких преобразований."""
+        try:
+            from soundcard import mediafoundation as mf
+
+            client = source._audio_client()
+            try:
+                pp = mf._ffi.new("WAVEFORMATEXTENSIBLE**")
+                mf._com.check_error(client[0][0].lpVtbl.GetMixFormat(client[0], pp))
+                fmt = pp[0][0].Format
+                found = int(fmt.nSamplesPerSec), int(fmt.nChannels)
+                mf._ole32.CoTaskMemFree(pp[0])
+            finally:
+                mf._com.release(client)
+            return found
+        except Exception:  # noqa: BLE001 — не узнали: обойдёмся перебором
+            return None
+
+    def _open(self, source):
         """Открывает устройство в формате, который примет Windows.
 
-        soundcard меняет в формате устройства число каналов, но не маску каналов, поэтому
-        «2 канала» для микрофона-массива из 4 (частое дело в ноутбуках) или для вывода 5.1
-        Windows отвергает как «invalid argument». Сначала просим все каналы устройства (их
-        сводим в моно сами), потом пробуем другие сочетания."""
+        Сначала — ровно в формате, в котором Windows смешивает звук этого устройства: его она
+        принимает всегда. Если узнать его не вышло — перебираем частоты и число каналов:
+        soundcard меняет в формате число каналов, но не маску каналов, и «2 канала» для
+        микрофона-массива из 4 или для вывода 5.1 Windows отвергает как «invalid argument».
+        Все каналы сводим в моно сами."""
+        mix = self._mix_format(source)
         own = int(getattr(source, "channels", 0) or 0)
-        channels = list(dict.fromkeys(c for c in (own, 2, 1, 4, 6, 8) if c > 0))
+        tries = [mix] if mix else []
+        tries += [(rate, ch) for rate in RATES for ch in (own, 2, 1, 4, 6, 8) if ch > 0]
+        failed: list[str] = []
         last: Exception | None = None
-        for rate in RATES:
-            for ch in channels:
+        for rate, ch in dict.fromkeys(tries):
+            try:
+                rec = source.recorder(samplerate=rate, channels=ch, blocksize=rate // 20)
+            except (RuntimeError, TypeError, ValueError, AssertionError) as e:
+                last = e
+                failed.append(f"{ch} кан. {rate} Гц: {e or e.__class__.__name__}")
+                if isinstance(e, RuntimeError) and str(e) not in _FORMAT_ERRORS:
+                    break  # дело не в формате (устройство пропало, служба звука не работает…)
+                continue
+            try:
+                return rec.__enter__(), rec, rate, ch
+            except (RuntimeError, TypeError, ValueError, AssertionError) as e:
+                last = e
+                failed.append(f"{ch} кан. {rate} Гц, запуск: {e or e.__class__.__name__}")
                 try:
-                    rec = source.recorder(samplerate=rate, channels=ch, blocksize=rate // 20)
-                    return rec.__enter__(), rec, rate, ch
-                except (RuntimeError, TypeError, ValueError) as e:
-                    last = e
+                    rec.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001 — устройство и так не работает
+                    pass
+        _log(f"{self.label}: устройство не открылось (формат устройства: "
+             f"{f'{mix[1]} кан. {mix[0]} Гц' if mix else 'неизвестен'}); " + "; ".join(failed))
         raise last or RuntimeError("устройство не открылось")
 
     def _run(self):
@@ -129,6 +211,8 @@ class TrackRecorder:
             source = sc.get_microphone(self.device, include_loopback=self.loopback)
             rec, ctx, rate, ch = self._open(source)
             self.format = f"{ch} кан., {rate} Гц"
+            self._alive = time.monotonic()
+            _log(f"{self.label}: {getattr(source, 'name', self.device)} — {self.format}")
             try:
                 self._enc = self._encoder(rate)
             except OSError as e:
@@ -137,6 +221,7 @@ class TrackRecorder:
             block = rate // 20
             while not self._stop.is_set():
                 data = rec.record(numframes=block)
+                self._alive = time.monotonic()
                 # все каналы устройства (у «петли» и микрофона-массива их несколько) сводим в моно
                 mono = data.mean(axis=1) if data.ndim == 2 else data
                 self.level = level_of(mono)
@@ -151,10 +236,7 @@ class TrackRecorder:
                     return
         except Exception as e:  # noqa: BLE001 — показываем пользователю любую ошибку устройства
             if not self._stop.is_set():
-                text = str(e) or e.__class__.__name__
-                self._error = ("Windows не дала открыть устройство в подходящем формате (invalid argument). "
-                               "Попробуйте выбрать другое устройство в «Настройках» → «Запись»."
-                               if text == "invalid argument" else text)
+                self._error = _explain(e)
         finally:
             self.level = 0.0
             if ctx is not None:
@@ -191,6 +273,17 @@ class TrackRecorder:
             return self._error
         if self._enc and self._enc.poll() not in (None, 0) and not self._stop.is_set():
             return self._encoder_message()
+        now = time.monotonic()
+        if now - self._checked > 5:
+            self._alive = now  # компьютер спал или окно подвисло — это не зависание звука
+        self._checked = now
+        if not self._stop.is_set() and self._thread and self._thread.is_alive() and now - self._alive > STALL:
+            # вызов внутри Windows не вернулся: так бывает, когда зависла служба «Windows Audio»
+            what = "перестала присылать звук с устройства" if self.format else "не отвечает при открытии устройства"
+            self._error = (f"Windows {what} — похоже, зависла служба «Windows Audio». Перезапустите её "
+                           "(«Службы» → «Windows Audio» → «Перезапустить») или перезагрузите компьютер." + _ANTIVIRUS)
+            _log(f"{self.label}: {self._error}")
+            return self._error
         return None
 
     def request_stop(self):
@@ -199,6 +292,12 @@ class TrackRecorder:
     def wait_stopped(self):
         if self._thread:
             self._thread.join(timeout=5)
+            if self._thread.is_alive() and self._enc:
+                # поток завис внутри Windows — закрываем ffmpeg сами, чтобы записанное сохранилось
+                try:
+                    self._enc.stdin.close()
+                except (OSError, ValueError):
+                    pass
         if self._enc:
             try:
                 self._enc.wait(timeout=10)
