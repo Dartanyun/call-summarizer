@@ -200,6 +200,8 @@ DEFAULTS = {
     "github_token": "",        # токен для закрытого репозитория (только чтение)
     "update_last_check": "",
     "update_skipped": "",      # версия, которую попросили пропустить
+    # сеть
+    "proxy": "",               # "" — напрямую; иначе http://… или socks5://… (osdeps.apply_proxy)
 }
 
 

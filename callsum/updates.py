@@ -75,7 +75,6 @@ class _DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
-_opener = urllib.request.build_opener(_DropAuthOnRedirect)
 
 
 def _request(url: str, cfg: dict, accept: str = "application/vnd.github+json"):
@@ -84,7 +83,9 @@ def _request(url: str, cfg: dict, accept: str = "application/vnd.github+json"):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        return _opener.open(urllib.request.Request(url, headers=headers), timeout=30)
+        # открывалка каждый раз новая: так она читает текущий прокси из настроек (osdeps.apply_proxy)
+        opener = urllib.request.build_opener(_DropAuthOnRedirect)
+        return opener.open(urllib.request.Request(url, headers=headers), timeout=30)
     except urllib.error.HTTPError as e:
         if e.code == 404 and not token:
             raise UpdateError("GitHub не нашёл релизы программы. Если репозиторий закрыт, укажите токен "

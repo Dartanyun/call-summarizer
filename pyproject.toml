@@ -13,6 +13,8 @@ dependencies = [
     "PySide6>=6.6",
     "faster-whisper>=1.1",
     "anthropic>=1.15",
+    # SOCKS-прокси для Claude API и загрузки моделей (osdeps.apply_proxy)
+    "socksio>=1,<2",
     "sherpa-onnx>=1.12",
     "numpy",
     # календарь iCal: встречи, в том числе повторяющиеся

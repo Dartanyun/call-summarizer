@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from . import config
+from . import config, osdeps
 
 BACKENDS = [
     ("claude", "Claude API (облако Anthropic)"),
@@ -133,7 +133,11 @@ def _claude_errors(model: str) -> Iterator[None]:
     except anthropic.APIStatusError as e:
         raise LLMError(f"Ошибка API ({e.status_code}): {e.message}") from e
     except anthropic.APIConnectionError as e:
-        raise LLMError("Нет соединения с API Anthropic. Проверьте интернет.") from e
+        # APITimeoutError — тоже APIConnectionError
+        how = (f"Проверьте прокси в «Настройках» → «Общие» → «Сеть» (сейчас {osdeps.proxy_label(proxy)})." if (proxy := config.load().get("proxy"))
+               else "Проверьте интернет. Если Claude API недоступен из вашей сети, укажите прокси "
+                    "в «Настройках» → «Общие» → «Сеть».")
+        raise LLMError(f"Нет соединения с API Anthropic. {how}") from e
 
 
 def _claude_content(content) -> list[dict] | str:

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from . import __version__, audio, callwatch, config, llm, templates, theme, voices
+from . import __version__, audio, callwatch, config, llm, osdeps, templates, theme, voices
 from .widgets import fix_row_heights
 
 
@@ -180,6 +180,42 @@ class SettingsDialog(QDialog):
         self.checker.none.connect(lambda: self.update_status.setText("Установлена последняя версия."))
         self.checker.failed.connect(self.update_status.setText)
         layout.addWidget(g)
+
+        g = QGroupBox("Сеть")
+        f = QFormLayout(g)
+        self.proxy = QLineEdit(cfg.get("proxy", ""))
+        self.proxy.setPlaceholderText("напрямую — например, http://127.0.0.1:10809 или socks5://127.0.0.1:10808")
+        f.addRow("Прокси:", self.proxy)
+        row = QHBoxLayout()
+        self.proxy_status = _hint("")
+        row.addWidget(self.proxy_status, 1)
+        check = QPushButton("Проверить")
+        check.clicked.connect(self._check_proxy)
+        row.addWidget(check, 0, Qt.AlignmentFlag.AlignTop)
+        f.addRow(row)
+        f.addRow(_hint("Нужен, если Claude API недоступен из вашей сети. Через прокси идут все запросы программы "
+                       "в интернет: саммари, загрузка моделей, обновления, календари. Логин и пароль можно "
+                       "указать в адресе: http://логин:пароль@адрес:порт. SOCKS-прокси работает только для "
+                       "Claude и загрузки моделей Whisper — для остального укажите HTTP-прокси."))
+        layout.addWidget(g)
+
+    def _check_proxy(self):
+        try:
+            text = osdeps.normalize_proxy(self.proxy.text())
+        except ValueError as e:
+            self.proxy_status.setText(str(e))
+            return
+        self.bg.run(self.proxy_status, lambda: osdeps.check_proxy(text))
+
+    def accept(self):
+        try:
+            osdeps.normalize_proxy(self.proxy.text())
+        except ValueError as e:
+            self.nav.setCurrentRow(0)  # «Общие»
+            self.proxy_status.setText(str(e))
+            self.proxy.setFocus()
+            return
+        super().accept()
 
     def _page_summary(self, layout: QVBoxLayout):
         cfg = self.cfg
@@ -603,5 +639,6 @@ class SettingsDialog(QDialog):
             obsidian_auto=self.obsidian_auto.isChecked(),
             update_check=self.update_check.isChecked(),
             github_token=self.github_token.text().strip(),
+            proxy=osdeps.normalize_proxy(self.proxy.text()),
         )
         return cfg
