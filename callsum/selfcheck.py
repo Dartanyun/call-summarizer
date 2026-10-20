@@ -107,6 +107,28 @@ def run(args: list[str]) -> int:
 
     check("кодирование в Opus", opus)
 
+    def two_tracks_real():
+        """Настоящая soundcard, две дорожки сразу — как при записи созвона. Устройства «нет»,
+        поэтому ждём ошибку «не найдено», а не сбой загрузки библиотеки или COM."""
+        import time
+
+        from . import audio_win
+
+        tracks = [audio_win.TrackRecorder("нет-такого-устройства", tmp / f"{k}.ogg", label, k)
+                  for k, label in (("mic", "Микрофон"), ("system", "Собеседники"))]
+        for t in tracks:
+            t.start()
+        time.sleep(2.0)
+        errors = [t.error() or "" for t in tracks]
+        for t in tracks:
+            t.stop()
+        bad = [e for e in errors if "0x100000001" in e or "has no attribute" in e or "Error 0x" in e]
+        assert not bad, "; ".join(bad)
+        return "библиотека и COM в порядке; без устройства: " + (errors[0][:70] or "ошибок нет")
+
+    if osdeps.IS_WIN:
+        check("WASAPI: две дорожки сразу", two_tracks_real)
+
     def recorder_pipe():
         """Запись дорожки целиком, как во время созвона, — только вместо устройства пробный звук.
         Устройство — как микрофон-массив ноутбука: 4 канала, другое число каналов Windows

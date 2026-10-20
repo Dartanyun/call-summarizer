@@ -23,8 +23,16 @@ BLOCK = SAMPLE_RATE // 20  # 50 мс — и для индикатора, и дл
 RATES = (48000, 44100, 16000)
 
 
+_import_lock = threading.Lock()
+
+
 def _sc():
-    import soundcard
+    """Библиотека soundcard. Загружать её надо там, где COM ещё не инициализирован в режиме MTA:
+    при загрузке она сама вызывает CoInitializeEx, и ответ «уже инициализирован» (S_FALSE,
+    «Error 0x100000001») принимает за ошибку — и загрузка срывается. Поэтому грузим её один раз,
+    из главного потока программы (см. TrackRecorder.start), под блокировкой."""
+    with _import_lock:
+        import soundcard
 
     warnings.filterwarnings("ignore", message="data discontinuity")
     return soundcard
@@ -71,6 +79,10 @@ class TrackRecorder:
         self._error: str | None = None
 
     def start(self):
+        try:
+            _sc()  # загрузка — здесь, в главном потоке (см. _sc), а не в потоке записи
+        except Exception as e:  # noqa: BLE001 — любая ошибка WASAPI
+            raise AudioError(f"Не удалось подготовить запись звука: {e}") from e
         # устройство открывается в своём потоке (там свой COM), ffmpeg запускается уже под его формат
         self.format = ""
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -105,13 +117,15 @@ class TrackRecorder:
         raise last or RuntimeError("устройство не открылось")
 
     def _run(self):
-        # soundcard работает через COM; в своём потоке его нужно инициализировать отдельно
-        ole32 = ctypes.windll.ole32 if osdeps.IS_WIN else None
-        if ole32:
-            ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
         ctx = None
+        ole32 = None
         try:
+            # сначала библиотека (если её ещё нет, она сама настроит COM в этом потоке),
+            # потом COM для этого потока — ответ «уже инициализирован» здесь не ошибка
             sc = _sc()
+            if osdeps.IS_WIN:
+                ole32 = ctypes.windll.ole32
+                ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
             source = sc.get_microphone(self.device, include_loopback=self.loopback)
             rec, ctx, rate, ch = self._open(source)
             self.format = f"{ch} кан., {rate} Гц"
