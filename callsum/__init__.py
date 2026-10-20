@@ -2,4 +2,4 @@
 
 # единственное место, где записана версия: её читают pyproject.toml, окно программы и `--version`.
 # Менять — через `python scripts/release.py`, он же обновит CHANGELOG.md и бейдж в README.
-__version__ = "1.4.2"
+__version__ = "1.5.0"
