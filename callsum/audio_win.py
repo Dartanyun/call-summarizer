@@ -88,6 +88,52 @@ def _sc():
 # KSDATAFORMAT_SUBTYPE_IEEE_FLOAT и стандартные раскладки колонок (KSAUDIO_SPEAKER_*)
 _IEEE_FLOAT = uuid.UUID("00000003-0000-0010-8000-00aa00389b71").bytes_le
 _MASKS = {1: 0x4, 2: 0x3, 3: 0x7, 4: 0x33, 5: 0x37, 6: 0x3F, 7: 0x13F, 8: 0x63F}
+# флаги потока: перевод формата и частоты силами Windows (autoconvert + хороший ресемплер), без «persist»
+_CONVERT = 0x80000000 | 0x08000000 | 0x00080000
+_LOOPBACK = 0x00020000
+# как описать Windows формат потока, по порядку попыток: формат смешивания устройства байт в байт и без
+# флагов (как в примере записи от Microsoft); свой WAVEFORMATEXTENSIBLE; простой WAVEFORMATEX
+STYLES = ("exact", "ext", "plain")
+
+
+def _mix_bytes(mf, ptr) -> bytes:
+    """Формат, в котором Windows смешивает звук устройства, — байтами, как его отдала Windows."""
+    pp = mf._ffi.new("WAVEFORMATEXTENSIBLE**")
+    mf._com.check_error(ptr[0][0].lpVtbl.GetMixFormat(ptr[0], pp))
+    try:
+        extra = struct.unpack_from("<H", bytes(mf._ffi.buffer(pp[0], 18)), 16)[0]
+        return bytes(mf._ffi.buffer(pp[0], 18 + min(extra, 22)))
+    finally:
+        mf._ole32.CoTaskMemFree(pp[0])
+
+
+def _mix_info(raw: bytes) -> tuple[int, int, int, bool]:
+    """(частота, каналы, маска каналов, float32 ли) формата смешивания."""
+    tag, ch, rate, _avg, _align, bits = struct.unpack_from("<HHIIHH", raw)
+    ext = tag == 0xFFFE and len(raw) >= 40
+    mask = struct.unpack_from("<I", raw, 20)[0] if ext else 0
+    return rate, ch, mask, bits == 32 and (tag == 3 or (ext and raw[24:40] == _IEEE_FLOAT))
+
+
+def describe_mix(raw: bytes) -> str:
+    rate, ch, mask, is_float = _mix_info(raw)
+    return f"{ch} кан. {rate} Гц, {'float32' if is_float else 'не float32'}, маска {mask:#x}, байты {raw.hex()}"
+
+
+def _stream_format(mix: bytes, rate: int, ch: int, style: str) -> tuple[bytes, int, str]:
+    """(формат потока, флаги потока, что выбрано — для журнала).
+
+    Формат смешивания Windows принимает без преобразований, поэтому он отдаётся как есть, если
+    совпадает с нужным. Иначе — float32 с переводом формата силами Windows; маска каналов —
+    устройства, если число каналов то же, иначе стандартная раскладка."""
+    mix_rate, mix_ch, mix_mask, is_float = _mix_info(mix)
+    if style == "exact" and (rate, ch) == (mix_rate, mix_ch) and is_float:
+        return mix, 0, "формат устройства как есть"
+    if style == "plain":
+        return struct.pack("<HHIIHHH", 3, ch, rate, rate * ch * 4, ch * 4, 32, 0), _CONVERT, "WAVEFORMATEX"
+    mask = mix_mask if ch == mix_ch and bin(mix_mask).count("1") == ch else _MASKS.get(ch, 0)
+    fmt = struct.pack("<HHIIHHHHI", 0xFFFE, ch, rate, rate * ch * 4, ch * 4, 32, 22, 32, mask) + _IEEE_FLOAT
+    return fmt, _CONVERT, f"маска {mask:#x}"
 
 
 def _fix_format(mf) -> None:
@@ -95,42 +141,45 @@ def _fix_format(mf) -> None:
 
     soundcard объявляет WAVEFORMATEXTENSIBLE для cffi без упаковки, а в Windows структура упакована
     (#pragma pack(1)): у soundcard поля после первых 18 байт сдвинуты. Записывая «32 бита точности»,
-    она на самом деле затирает маску каналов, и маска перестаёт совпадать с числом каналов. Старые
-    сборки Windows это прощали, новые отвергают — «invalid argument» при любом формате. Здесь формат
-    собирается побайтно, по настоящей раскладке, с маской каналов устройства."""
+    она на самом деле затирает маску каналов, и маска перестаёт совпадать с числом каналов; к тому же
+    просит у Windows лишнее (подстройку частоты). Где-то это прощается, где-то — «invalid argument»
+    при любом формате. Здесь формат собирается побайтно (см. _stream_format), а у recorder() есть
+    параметр style — как описать формат (см. STYLES)."""
     if getattr(mf._AudioClient, "_callsum_fixed", False):
         return
 
-    def init(self, ptr, samplerate, channels, blocksize, isloopback, exclusive_mode=False):
+    def init(self, ptr, samplerate, channels, blocksize, isloopback, exclusive_mode=False, style="exact"):
         self._ptr = ptr
         self.channelmap = list(range(channels)) if isinstance(channels, int) else list(channels)
         if blocksize is None:
             blocksize = self.deviceperiod[0] * samplerate
-        pp = mf._ffi.new("WAVEFORMATEXTENSIBLE**")
-        mf._com.check_error(ptr[0][0].lpVtbl.GetMixFormat(ptr[0], pp))
-        try:
-            raw = bytes(mf._ffi.buffer(pp[0], 40))
-        finally:
-            mf._ole32.CoTaskMemFree(pp[0])
-        tag, mix_channels, _rate, _avg, _align, _bits, extra = struct.unpack_from("<HHIIHHH", raw, 0)
-        mix_mask = struct.unpack_from("<I", raw, 20)[0] if tag == 0xFFFE and extra >= 22 else 0
-        ch = len(set(self.channelmap))
-        mask = mix_mask if ch == mix_channels and bin(mix_mask).count("1") == ch else _MASKS.get(ch, 0)
-        rate = int(samplerate)
-        fmt = bytearray(40)
-        struct.pack_into("<HHIIHHHHI", fmt, 0, 0xFFFE, ch, rate, rate * ch * 4, ch * 4, 32, 22, 32, mask)
-        fmt[24:40] = _IEEE_FLOAT
-        self._format = mf._ffi.new("char[]", bytes(fmt))  # память нужна, пока жив клиент
-        # перевод формата и частоты — силами Windows (autoconvert + хороший ресемплер), без «persist»
-        flags = 0x80000000 | 0x08000000 | 0x00080000 | (0x00020000 if isloopback else 0)
+        fmt, flags, self.format_note = _stream_format(_mix_bytes(mf, ptr), int(samplerate),
+                                                      len(set(self.channelmap)), style)
+        if isloopback:
+            flags |= _LOOPBACK
+        self.format_note += f", флаги {flags:#x}"
+        self._format = mf._ffi.new("char[]", fmt)  # память нужна, пока жив клиент
         mode = mf._ole32.AUDCLNT_SHAREMODE_EXCLUSIVE if exclusive_mode else mf._ole32.AUDCLNT_SHAREMODE_SHARED
         hr = ptr[0][0].lpVtbl.Initialize(ptr[0], mode, flags, int(blocksize / samplerate * 10_000_000), 0,
                                          mf._ffi.cast("WAVEFORMATEXTENSIBLE*", self._format), mf._ffi.NULL)
-        mf._com.check_error(hr)
+        if hr != 0:
+            mf._com.release(ptr)  # клиент так и не заработал
+            try:
+                mf._com.check_error(hr)
+            except RuntimeError as e:
+                e.format_note = self.format_note
+                raise
         self.samplerate = samplerate
         self._idle_start_time = None
 
+    def recorder(self, samplerate, channels=None, blocksize=None, exclusive_mode=False, style="exact"):
+        if channels is None:
+            channels = self.channels
+        return mf._Recorder(self._audio_client(), samplerate, channels, blocksize, self.isloopback,
+                            exclusive_mode, style)
+
     mf._AudioClient.__init__ = init
+    mf._Microphone.recorder = recorder
     mf._AudioClient._callsum_fixed = True
 
 
@@ -196,22 +245,17 @@ class TrackRecorder:
         return osdeps.popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     @staticmethod
-    def _mix_format(source) -> tuple[int, int] | None:
-        """(частота, каналы), в которых Windows сама смешивает звук устройства. Поток ровно в этом
-        формате общий режим WASAPI принимает всегда, без всяких преобразований."""
+    def _mix_format(source) -> bytes | None:
+        """Формат, в котором Windows сама смешивает звук устройства (см. _mix_bytes). Поток ровно
+        в этом формате общий режим WASAPI принимает всегда, без всяких преобразований."""
         try:
             from soundcard import mediafoundation as mf
 
             client = source._audio_client()
             try:
-                pp = mf._ffi.new("WAVEFORMATEXTENSIBLE**")
-                mf._com.check_error(client[0][0].lpVtbl.GetMixFormat(client[0], pp))
-                fmt = pp[0][0].Format
-                found = int(fmt.nSamplesPerSec), int(fmt.nChannels)
-                mf._ole32.CoTaskMemFree(pp[0])
+                return _mix_bytes(mf, client)
             finally:
                 mf._com.release(client)
-            return found
         except Exception:  # noqa: BLE001 — не узнали: обойдёмся перебором
             return None
 
@@ -219,27 +263,31 @@ class TrackRecorder:
         """Открывает устройство в формате, который примет Windows.
 
         Сначала — ровно в формате, в котором Windows смешивает звук этого устройства: его она
-        принимает всегда. Если узнать его не вышло — перебираем частоты и число каналов:
-        soundcard меняет в формате число каналов, но не маску каналов, и «2 канала» для
-        микрофона-массива из 4 или для вывода 5.1 Windows отвергает как «invalid argument».
-        Все каналы сводим в моно сами."""
+        принимает всегда; он передаётся байт в байт, потом — собранным заново (см. STYLES). Если
+        не вышло — перебираем частоты и число каналов: микрофон-массив из 4 каналов или вывод 5.1
+        Windows может не открыть как «2 канала». Все каналы сводим в моно сами."""
         mix = self._mix_format(source)
         own = int(getattr(source, "channels", 0) or 0)
-        tries = [mix] if mix else []
-        tries += [(rate, ch) for rate in RATES for ch in (own, 2, 1, 4, 6, 8) if ch > 0]
+        tries = []
+        if mix:
+            rate, ch, _mask, is_float = _mix_info(mix)
+            tries = [(rate, ch, style) for style in (STYLES if is_float else STYLES[1:])]
+        tries += [(rate, ch, "ext") for rate in RATES for ch in (own, 2, 1, 4, 6, 8) if ch > 0]
         failed: list[str] = []
         last: Exception | None = None
-        for rate, ch in dict.fromkeys(tries):
+        about = f"формат устройства: {describe_mix(mix) if mix else 'неизвестен'}"
+        for rate, ch, style in dict.fromkeys(tries):
             try:
-                rec = source.recorder(samplerate=rate, channels=ch, blocksize=rate // 20)
+                rec = source.recorder(samplerate=rate, channels=ch, blocksize=rate // 20, style=style)
             except (RuntimeError, TypeError, ValueError, AssertionError) as e:
                 last = e
-                failed.append(f"{ch} кан. {rate} Гц: {e or e.__class__.__name__}")
+                failed.append(f"{ch} кан. {rate} Гц ({getattr(e, 'format_note', style)}): "
+                              f"{e or e.__class__.__name__}")
                 if isinstance(e, RuntimeError) and str(e) not in _FORMAT_ERRORS:
                     break  # дело не в формате (устройство пропало, служба звука не работает…)
                 continue
             try:
-                return rec.__enter__(), rec, rate, ch
+                opened = rec.__enter__()
             except (RuntimeError, TypeError, ValueError, AssertionError) as e:
                 last = e
                 failed.append(f"{ch} кан. {rate} Гц, запуск: {e or e.__class__.__name__}")
@@ -247,8 +295,11 @@ class TrackRecorder:
                     rec.__exit__(None, None, None)
                 except Exception:  # noqa: BLE001 — устройство и так не работает
                     pass
-        _log(f"{self.label}: устройство не открылось (формат устройства: "
-             f"{f'{mix[1]} кан. {mix[0]} Гц' if mix else 'неизвестен'}); " + "; ".join(failed))
+                continue
+            if failed:
+                _log(f"{self.label}: открылось не с первой попытки ({about}); до этого: " + "; ".join(failed))
+            return opened, rec, rate, ch
+        _log(f"{self.label}: устройство не открылось ({about}); " + "; ".join(failed))
         raise last or RuntimeError("устройство не открылось")
 
     def _run(self):
@@ -265,7 +316,8 @@ class TrackRecorder:
             rec, ctx, rate, ch = self._open(source)
             self.format = f"{ch} кан., {rate} Гц"
             self._alive = time.monotonic()
-            _log(f"{self.label}: {getattr(source, 'name', self.device)} — {self.format}")
+            note = getattr(rec, "format_note", "")
+            _log(f"{self.label}: {getattr(source, 'name', self.device)} — {self.format}" + (f" ({note})" if note else ""))
             try:
                 self._enc = self._encoder(rate)
             except OSError as e:

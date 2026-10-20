@@ -161,7 +161,7 @@ def run(args: list[str]) -> int:
         class Source:
             channels = 4
 
-            def recorder(self, samplerate, channels, blocksize):
+            def recorder(self, samplerate, channels, blocksize, style="exact"):
                 if channels != 4:
                     raise RuntimeError("invalid argument")
                 return Rec(samplerate, channels)

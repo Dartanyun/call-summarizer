@@ -1,7 +1,8 @@
 """Запись через настоящий WASAPI на виртуальной звуковой карте (VB-CABLE) — в GitHub Actions.
 
 1. Исходная soundcard: воспроизводится ли «invalid argument».
-2. С исправлением формата (audio_win._fix_format): открываются ли микрофон и «петля».
+2. С исправлением формата (audio_win._fix_format): открываются ли микрофон и «петля» — в формате
+   устройства каждым способом его описать (audio_win.STYLES) и в других форматах.
 3. Настоящая запись: в виртуальный динамик играет тон, микрофон (CABLE Output) и звук
    собеседников («петля» с CABLE Input) пишутся одновременно, как во время созвона.
 """
@@ -46,13 +47,14 @@ def mix_info(src) -> str:
     return f"{ch} кан., {rate} Гц, {bits} бит, маска каналов {struct.unpack_from('<I', raw, 20)[0]:#x}"
 
 
-def attempt(src, ch, rate) -> str:
+def attempt(src, ch, rate, **style) -> str:
     try:
-        with src.recorder(samplerate=rate, channels=ch, blocksize=rate // 20) as r:
+        with src.recorder(samplerate=rate, channels=ch, blocksize=rate // 20, **style) as r:
             d = r.record(numframes=rate // 4)
-        return f"ok, {d.shape[0]} кадров × {d.shape[1] if d.ndim > 1 else 1}"
+            note = getattr(r, "format_note", "")
+        return f"ok, {d.shape[0]} кадров × {d.shape[1] if d.ndim > 1 else 1}" + (f" ({note})" if note else "")
     except Exception as e:  # noqa: BLE001
-        return f"ошибка: {e or e.__class__.__name__}"
+        return f"ошибка: {e or e.__class__.__name__} ({getattr(e, 'format_note', '')})"
 
 
 sources = [("микрофон", soundcard.default_microphone()),
@@ -66,10 +68,16 @@ from callsum import audio, audio_win  # noqa: E402
 audio_win._sc()  # применяет исправление формата
 say("== с исправлением формата")
 for name, src in sources:
-    result = attempt(src, src.channels, 48000)
-    say(f"  {name}: {result}")
-    if not result.startswith("ok"):
-        failures.append(f"{name}: {result}")
+    client = src._audio_client()
+    try:
+        rate, ch, _mask, _float = audio_win._mix_info(audio_win._mix_bytes(mf, client))
+    finally:
+        mf._com.release(client)
+    for style in audio_win.STYLES:  # формат устройства — всеми способами его описать
+        result = attempt(src, ch, rate, style=style)
+        say(f"  {name}, {style}: {result}")
+        if not result.startswith("ok"):
+            failures.append(f"{name}, {style}: {result}")
     for ch, rate in ((1, 48000), (2, 44100), (src.channels, 16000)):
         say(f"     {ch} кан., {rate} Гц: {attempt(src, ch, rate)}")
 
