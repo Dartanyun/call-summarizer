@@ -8,6 +8,8 @@
 
 ## [Не выпущено]
 
+## [1.3.1] — 2026-10-20
+
 ### Добавлено
 
 - Проверка обновлений раз в день и обновление в один клик: установщик Windows ставит новую версию
@@ -108,7 +110,8 @@
 - Необязательная автоочистка старых аудиозаписей.
 - Светлая и тёмная тема, иконка приложения.
 
-[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.0...HEAD
+[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.0.0...v1.1.0
