@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import osdeps, render, theme
-from .widgets import set_icon
+from .widgets import fix_row_heights, set_icon
 
 HELP_DIR = Path(__file__).parent / "help"
 
@@ -55,6 +55,7 @@ class HelpWindow(QDialog):
         self.list = QListWidget()
         self.list.setObjectName("SideNav")
         self.list.setFixedWidth(250)
+        self.list.setSpacing(1)
         self.list.currentItemChanged.connect(lambda item, _p: item and self.show_topic(item.data(Qt.ItemDataRole.UserRole)))
         side.addWidget(self.list, 1)
         body.addLayout(side)
@@ -62,7 +63,10 @@ class HelpWindow(QDialog):
         self.view.setObjectName("Doc")
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self._on_link)
-        body.addWidget(self.view, 1)
+        doc = QVBoxLayout()
+        doc.setContentsMargins(4, 14, 14, 0)
+        doc.addWidget(self.view)
+        body.addLayout(doc, 1)
         v.addLayout(body, 1)
 
         row = QHBoxLayout()
@@ -94,6 +98,7 @@ class HelpWindow(QDialog):
                 self.list.addItem(item)
                 if key == self.current:
                     self.list.setCurrentItem(item)
+        fix_row_heights(self.list, 34)
         self.list.blockSignals(False)
         if self.list.count() and (self.list.currentItem() is None):
             self.list.setCurrentRow(0)

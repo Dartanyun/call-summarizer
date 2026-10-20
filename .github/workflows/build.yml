@@ -91,6 +91,10 @@ jobs:
           if ($p.ExitCode) { throw "Установщик завершился с кодом $($p.ExitCode)" }
           $dir = Join-Path $env:LOCALAPPDATA "Programs\CallSummarizer"
           $app = Join-Path $dir "CallSummarizer.exe"
+          # после тихой установки (так ставятся обновления из программы) программа запускается сама
+          function Wait-App { for ($i = 0; $i -lt 30; $i++) { if (Get-Process CallSummarizer -ErrorAction SilentlyContinue) { return $true }; Start-Sleep 1 }; return $false }
+          if (-not (Wait-App)) { throw "После тихой установки программа не запустилась" }
+          Stop-Process -Name CallSummarizer -Force; Start-Sleep 2
           if (-not (Test-Path $app)) { throw "Программа не установлена в $dir" }
           $lnk = Join-Path ([Environment]::GetFolderPath("Programs")) "Саммари созвонов.lnk"
           if (-not (Test-Path -LiteralPath $lnk)) { throw "Нет ярлыка в меню «Пуск»" }
@@ -102,9 +106,14 @@ jobs:
           Get-Content $report -Encoding utf8
           if ($p.ExitCode) { throw "Самопроверка не прошла" }
 
-          # программа уже ставилась: повторная установка поверх (обновление) тоже должна пройти
-          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
-          if ($p.ExitCode) { throw "Повторная установка завершилась с кодом $($p.ExitCode)" }
+          # обновление поверх работающей программы — так, как его запускает сама программа:
+          # установщик закрывает её, ставит новую версию и запускает снова
+          Start-Process $app
+          if (-not (Wait-App)) { throw "Программа не запустилась" }
+          $p = Start-Process $setup -ArgumentList "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($p.ExitCode) { throw "Обновление поверх завершилось с кодом $($p.ExitCode)" }
+          if (-not (Wait-App)) { throw "После обновления программа не запустилась снова" }
+          Stop-Process -Name CallSummarizer -Force; Start-Sleep 2
 
           Start-Process (Join-Path $dir "unins000.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
           # деинсталлятор перезапускает себя из временной папки — ждём, пока он закончит

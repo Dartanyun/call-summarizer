@@ -280,6 +280,15 @@ class Segmented(QFrame):
         return self.group.checkedId()
 
 
+def fix_row_heights(view, height: int) -> None:
+    """Одинаковая высота строк списка. Без этого QListWidget раскладывает строки по размеру,
+    посчитанному до применения стиля, а подсветку рисует по новому — и она наезжает на соседние."""
+    view.ensurePolished()
+    for i in range(view.count()):
+        view.item(i).setSizeHint(QSize(0, height))
+    view.doItemsLayout()
+
+
 def icon_button(name: str, tooltip: str, slot=None, size: int = 18) -> QToolButton:
     b = QToolButton()
     b.setProperty("icon_name", name)

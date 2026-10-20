@@ -95,13 +95,12 @@ class Timeline(QWidget):
         else:
             p.fillRect(QRectF(tr.left(), tr.top(), played_x - tr.left(), tr.height()), QColor(theme.C["accent"]))
         p.restore()
-        # начала глав — светлые чёрточки поперёк полосы
-        p.setPen(QColor(theme.C["bg"]))
+        # начала глав — зазоры в полосе и чёрточки над ней
         for t, _title in self.chapters:
             if t > 0:
                 x = self._x(t)
-                p.drawLine(QPointF(x, tr.top() - 1), QPointF(x, tr.bottom() + 1))
-        p.setPen(Qt.PenStyle.NoPen)
+                p.fillRect(QRectF(x - 1.5, tr.top() - 1, 3, tr.height() + 2), QColor(theme.C["card"]))
+                p.fillRect(QRectF(x - 0.75, tr.top() - 6, 1.5, 5), QColor(theme.C["faint"]))
         # отметки «важный момент» — флажки под полосой
         p.setBrush(QColor(theme.C["red"]))
         for t, _note in self.bookmarks:

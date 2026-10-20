@@ -7,12 +7,12 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QFile, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QFile, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
-    QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QTextEdit, QToolButton,
+    QMessageBox, QPushButton, QScrollArea, QStackedWidget, QSystemTrayIcon, QTextBrowser, QTextEdit, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -141,6 +141,17 @@ class MainWindow(QMainWindow):
         self.watcher.call_started.connect(self.on_call_started)
         self.watcher.call_ended.connect(self.on_call_ended)
 
+        self._install_conflict = None
+        QTimer.singleShot(1500, self.check_installs)
+        from .update_view import Checker
+
+        self.release = None          # найденная новая версия
+        self._update_notified = ""
+        self.update_checker = Checker(self)
+        self.update_checker.found.connect(self.on_update_found)
+        self.update_timer = QTimer(self, interval=6 * 3600 * 1000, timeout=self.check_updates)
+        self.update_timer.start()
+        QTimer.singleShot(60 * 1000, self.check_updates)
         self.recover_after_crash()
         self.reload_list()
         self.apply_silent_settings()
@@ -163,6 +174,7 @@ class MainWindow(QMainWindow):
         h.addWidget(self._build_sidebar())
         self.stack = QStackedWidget()
         self.page_welcome = self._build_welcome()
+        self.page_welcome.installEventFilter(self)
         self.page_call = self._build_call_page()
         self.page_rec = self._build_recording_page()
         get_calls = lambda: list(self.calls.values())  # noqa: E731
@@ -257,7 +269,16 @@ class MainWindow(QMainWindow):
         self.footer = QLabel()
         self.footer.setObjectName("Faint")
         self.footer.setContentsMargins(6, 0, 0, 0)
-        v.addWidget(self.footer)
+        foot = QHBoxLayout()
+        foot.addWidget(self.footer)
+        foot.addStretch()
+        self.btn_update = QPushButton()
+        self.btn_update.setObjectName("Link")
+        self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_update.clicked.connect(lambda: self.open_update())
+        self.btn_update.hide()
+        foot.addWidget(self.btn_update)
+        v.addLayout(foot)
         return side
 
     def _build_welcome(self) -> QWidget:
@@ -268,6 +289,7 @@ class MainWindow(QMainWindow):
         # колонка фиксированной ширины: так Qt правильно считает высоту текста с переносами
         column = QWidget()
         column.setFixedWidth(744)
+        self.welcome_column = column
         col = QVBoxLayout(column)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(14)
@@ -280,7 +302,7 @@ class MainWindow(QMainWindow):
         hero.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addWidget(hero)
         sub = QLabel("Приложение записывает ваш микрофон и голоса собеседников из любого мессенджера, "
-                     "распознаёт речь прямо на компьютере, а Claude выделяет главное.")
+                     "распознаёт речь прямо на компьютере, а Claude или локальная модель выделяют главное.")
         sub.setProperty("muted", True)
         sub.setWordWrap(True)
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -356,7 +378,14 @@ class MainWindow(QMainWindow):
         row.addStretch()
         outer.addLayout(row)
         outer.addStretch(3)
-        return page
+        # в невысоком окне приветствие прокручивается, а не сминается
+        scroll = QScrollArea()
+        scroll.setObjectName("Plain")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        return scroll
 
     def _meta_item(self, icon_name: str) -> tuple[QWidget, QLabel]:
         w = QWidget()
@@ -516,6 +545,8 @@ class MainWindow(QMainWindow):
                       "Прозвучало важное? «Отметить момент» — Ctrl+B"
                       + (f" или {self.bookmark_hotkey_label} из любого окна." if self.bookmark_hotkey_label else "."))
         self.rec_hint = hint
+        hint.setWordWrap(True)
+        hint.setMaximumWidth(520)
         hint.setProperty("muted", True)
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addSpacing(6)
@@ -527,14 +558,14 @@ class MainWindow(QMainWindow):
         self.btn_pause = QPushButton("Пауза")
         self.btn_pause.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_pause.setMinimumHeight(44)
-        self.btn_pause.setMinimumWidth(150)
+        self.btn_pause.setMinimumWidth(120)
         self.btn_pause.setToolTip("Ctrl+P")
         set_icon(self.btn_pause, "pause")
         self.btn_pause.clicked.connect(self.toggle_pause)
         stop = QPushButton("Остановить запись")
         stop.setObjectName("Record")
         stop.setCursor(Qt.CursorShape.PointingHandCursor)
-        stop.setMinimumWidth(240)
+        stop.setMinimumWidth(200)
         set_icon(stop, "stop", "on_accent")
         stop.clicked.connect(lambda: self.stop_recording())
         self.btn_mark = QPushButton("Отметить момент")
@@ -826,8 +857,11 @@ class MainWindow(QMainWindow):
                 self._fill_item(item, self.calls[call_id])
 
     def _on_list_changed(self, *_):
-        if self.list.hasFocus():
-            self.view_mode = "calls"  # выбрали созвон стрелками с клавиатуры
+        # список сам по себе меняется только с выключенными сигналами (reload_list), так что
+        # сюда попадаем, когда созвон выбрал человек — мышью или стрелками
+        if self.view_mode != "calls":
+            self._set_mode("calls")
+            return
         self.show_current()
 
     def _set_mode(self, mode: str):
@@ -1025,7 +1059,8 @@ class MainWindow(QMainWindow):
 
     def _render_stats(self, call: storage.Call):
         names = call.speaker_names()
-        key = (call.id, len(call.paragraphs()), tuple(names.items()), theme.is_dark)
+        narrow = self.stats_view.viewport().width() < 820
+        key = (call.id, len(call.paragraphs()), tuple(names.items()), theme.is_dark, narrow)
         if self._rendered.get("stats") == key:
             return
         self._rendered["stats"] = key
@@ -1038,7 +1073,7 @@ class MainWindow(QMainWindow):
         colors = {}
         for sid, name in names.items():
             colors.setdefault(name, by_sid[sid])
-        render.show_stats(self.stats_view, st, colors)
+        render.show_stats(self.stats_view, st, colors, narrow)
 
     def _render_transcript(self, call: storage.Call, transcript: str):
         active = self._active_para if self.player.is_playing() or self._active_para >= 0 else -1
@@ -1759,6 +1794,8 @@ class MainWindow(QMainWindow):
             self.reload_list(select=value)
         elif kind == "digest":
             self.show_digest(date.fromisoformat(value) if value else None)
+        elif kind == "update":
+            self.open_update()
 
     def on_tray_message_clicked(self):
         kind, value = self._tray_click
@@ -1771,6 +1808,8 @@ class MainWindow(QMainWindow):
             self.reload_list(select=value)
         elif kind == "digest":
             self.show_digest(date.fromisoformat(value) if value else None)
+        elif kind == "update":
+            self.open_update()
 
     # ================= итоги недели =================
 
@@ -1917,11 +1956,128 @@ class MainWindow(QMainWindow):
                 self.page_ask.refresh()
             elif self.view_mode == "digest":
                 self.page_digest.refresh()
+            if dlg.update_release is not None:
+                self.on_update_found(dlg.update_release)
+                self.open_update(dlg.update_release)
+
+    # ---------- обновления ----------
+
+    def check_updates(self, force: bool = False):
+        """Раз в сутки (или по кнопке) спрашиваем GitHub, нет ли новой версии."""
+        from datetime import datetime
+
+        if not force:
+            if not self.cfg.get("update_check", True):
+                return
+            try:
+                last = datetime.fromisoformat(self.cfg.get("update_last_check") or "")
+                if (datetime.now() - last).total_seconds() < 24 * 3600:
+                    return
+            except ValueError:
+                pass
+        self.cfg["update_last_check"] = datetime.now().isoformat(timespec="seconds")
+        config.save(self.cfg)
+        self.update_checker.run(dict(self.cfg))
+
+    def on_update_found(self, release):
+        self.release = release
+        skipped = self.cfg.get("update_skipped") == release.version
+        self.btn_update.setText(f"⬆ Версия {release.version}")
+        self.btn_update.setToolTip("Доступна новая версия — нажмите, чтобы посмотреть, что нового, и обновиться")
+        self.btn_update.setVisible(not skipped)
+        if not skipped and self._update_notified != release.version:
+            self._update_notified = release.version
+            self._popup("update:", f"Доступна версия {release.version}", "Нажмите, чтобы посмотреть, что нового, "
+                        "и обновиться.", [("default", "Открыть"), ("open", "Обновить")])
+
+    def open_update(self, release=None):
+        from . import updates
+        from .update_view import UpdateDialog
+
+        release = release or self.release
+        if release is None:
+            return
+        self.show_window()
+        busy = ("Идёт запись — обновиться можно после неё." if self.recorder else
+                "Идёт обработка записи — обновиться можно, когда она закончится." if self.pipeline.is_busy() else "")
+        dlg = UpdateDialog(self, release, dict(self.cfg), busy)
+        dlg.skipped.connect(self._skip_update)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dlg.restart_command:
+            updates.restart(dlg.restart_command)
+        self.quit_app()  # установщик Windows запустит новую версию сам, в Linux — команда выше
+
+    def _skip_update(self, version: str):
+        self.cfg["update_skipped"] = version
+        config.save(self.cfg)
+        self.btn_update.hide()
+
+    # ---------- две копии программы ----------
+
+    def check_installs(self):
+        """Старая копия из домашней папки перекрывает новую — предлагаем оставить одну."""
+        from . import installs
+
+        try:
+            conflict = installs.find()
+        except OSError:
+            return
+        if conflict is None or self.cfg.get("install_conflict_dismissed") == conflict.text:
+            return
+        self._install_conflict = conflict
+        if self.isVisible():
+            self._ask_install_conflict()
+
+    def eventFilter(self, obj, event):
+        # приветствие — не шире места справа от списка; Qt верно считает высоту текста
+        # только у колонки фиксированной ширины, поэтому меняем саму ширину колонки
+        if obj is self.page_welcome and event.type() == QEvent.Type.Resize:
+            self.welcome_column.setFixedWidth(max(420, min(744, obj.width() - 48)))
+        return super().eventFilter(obj, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._install_conflict is not None:
+            QTimer.singleShot(300, self._ask_install_conflict)
+
+    def _ask_install_conflict(self):
+        from . import installs
+
+        conflict, self._install_conflict = self._install_conflict, None
+        if conflict is None:
+            return
+        if conflict.restart and (self.recorder or self.pipeline.is_busy()):
+            self._install_conflict = conflict  # спросим после записи и обработки
+            return
+        box = QMessageBox(QMessageBox.Icon.Information, "Две копии программы", conflict.text, parent=self)
+        box.setInformativeText("Записи, настройки и запомненные голоса общие — они останутся на месте.")
+        go = box.addButton(conflict.action, QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Не сейчас", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
+            self.cfg["install_conflict_dismissed"] = conflict.text
+            config.save(self.cfg)
+            return
+        try:
+            installs.resolve(conflict)
+        except OSError as e:
+            QMessageBox.warning(self, "Две копии программы", f"Не получилось удалить старую копию:\n{e}")
+            return
+        if conflict.restart:
+            self.quit_app()  # новая копия запустится сама через пару секунд
+        else:
+            self.toast.show_message("Старая копия удалена. Теперь из меню запускается эта версия.", 6000)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if not hasattr(self, "welcome_column"):
+            return
         if self.toast.isVisible():
             self.toast._reposition()
+        # статистика в узком окне раскладывается по-другому
+        if self.docs.currentIndex() == 2 and self.current_call() and self.stack.currentWidget() is self.page_call:
+            self._render_stats(self.current_call())
 
     def quit_app(self):
         self._quitting = True

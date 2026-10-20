@@ -230,6 +230,21 @@ Description: запись созвонов, распознавание речи 
  и делает структурированное саммари через Claude API.
 """, encoding="utf-8")
     normalize_modes(root)
+    # после установки: если у пользователя есть копия из install.sh, её ярлык перекроет пакет — скажем об этом
+    postinst = root / "DEBIAN" / "postinst"
+    postinst.write_text(f"""#!/bin/sh
+set -e
+user="${{SUDO_USER:-}}"
+[ -n "$user" ] || exit 0
+home=$(getent passwd "$user" | cut -d: -f6)
+if [ -d "$home/.local/share/{app_id}/app" ] || [ -d "$home/.local/share/{app_id}/program" ]; then
+    echo "Саммари созвонов: в $home/.local/share/{app_id} осталась копия из install.sh — из меню"
+    echo "запускается она. Удалите её (записи останутся): запустите программу и согласитесь на"
+    echo "удаление старой копии или выполните ./uninstall.sh из её архива."
+fi
+exit 0
+""", encoding="utf-8")
+    postinst.chmod(0o755)
     out = DIST / f"{app_id}_{VERSION}_amd64.deb"
     subprocess.run(["dpkg-deb", "--root-owner-group", "-Zxz", "--build", str(root), str(out)], check=True)
     return out

@@ -3,7 +3,7 @@
 import sys
 import threading
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__, audio, callwatch, config, llm, templates, theme, voices
+from .widgets import fix_row_heights
 
 
 def _combo(items: list[tuple[str, str]], current: str) -> QComboBox:
@@ -84,6 +85,9 @@ class SettingsDialog(QDialog):
         for icon_name, title in PAGES:
             item = QListWidgetItem(theme.icon(icon_name, theme.C["muted"]), title)
             self.nav.addItem(item)
+        self.nav.setSpacing(1)
+        self.nav.setIconSize(QSize(18, 18))
+        fix_row_heights(self.nav, 36)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         side = QVBoxLayout()
         side.setContentsMargins(12, 14, 6, 0)
@@ -107,7 +111,9 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         bottom = QHBoxLayout()
         bottom.setContentsMargins(18, 0, 18, 0)
-        version = QLabel(f"Версия {__version__}")
+        from . import installs
+
+        version = QLabel(f"Версия {__version__} · {installs.KIND_LABELS[installs.current_kind()]}")
         version.setObjectName("Faint")
         version.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         bottom.addWidget(version)
@@ -139,6 +145,40 @@ class SettingsDialog(QDialog):
         f = QFormLayout(g)
         self.theme = _combo(config.THEMES, cfg.get("theme", "system"))
         f.addRow("Тема:", self.theme)
+        layout.addWidget(g)
+
+        from . import installs
+        from .update_view import Checker
+
+        g = QGroupBox("Обновления")
+        f = QFormLayout(g)
+        f.addRow("Установлена:", QLabel(f"версия {__version__} · {installs.KIND_LABELS[installs.current_kind()]}"))
+        self.update_check = QCheckBox("Проверять раз в день, нет ли новой версии")
+        self.update_check.setChecked(cfg.get("update_check", True))
+        f.addRow(self.update_check)
+        self.github_token = _secret(cfg.get("github_token", ""), "не нужен, пока репозиторий открыт")
+        f.addRow("Токен GitHub:", self.github_token)
+        f.addRow(_hint("Новые версии берутся со страницы релизов на GitHub. Токен понадобится, только если "
+                       'репозиторий закроют: <a href="https://github.com/settings/personal-access-tokens/new">токен '
+                       "с ограниченным доступом</a> к репозиторию call-summarizer, право Contents — Read-only.",
+                       links=True))
+        row = QHBoxLayout()
+        self.update_status = _hint("")
+        row.addWidget(self.update_status, 1)
+        self.btn_update_now = QPushButton("Обновить…")
+        self.btn_update_now.setObjectName("Primary")
+        self.btn_update_now.hide()
+        self.btn_update_now.clicked.connect(self.accept)
+        row.addWidget(self.btn_update_now, 0, Qt.AlignmentFlag.AlignTop)
+        check = QPushButton("Проверить сейчас")
+        check.clicked.connect(self._check_updates)
+        row.addWidget(check, 0, Qt.AlignmentFlag.AlignTop)
+        f.addRow(row)
+        self.update_release = None
+        self.checker = Checker(self)
+        self.checker.found.connect(self._update_found)
+        self.checker.none.connect(lambda: self.update_status.setText("Установлена последняя версия."))
+        self.checker.failed.connect(self.update_status.setText)
         layout.addWidget(g)
 
     def _page_summary(self, layout: QVBoxLayout):
@@ -320,6 +360,7 @@ class SettingsDialog(QDialog):
         f.addRow("Автозапись звонков:", self.auto_record)
         self.call_apps = QLineEdit(cfg.get("call_apps") or callwatch.DEFAULT_APPS)
         self.call_apps.setToolTip("Части названий приложений через запятую.")
+        self.call_apps.setCursorPosition(0)  # длинный список — показываем его начало, а не конец
         f.addRow("Приложения для звонков:", self.call_apps)
         self.notifications = _combo(config.NOTIFICATIONS, cfg.get("notifications", "all"))
         f.addRow("Уведомления:", self.notifications)
@@ -446,6 +487,18 @@ class SettingsDialog(QDialog):
         self.ollama_status.setText(f"Найдено моделей: {len(models)}." if models else
                                    f"Ollama не отвечает по адресу {llm.ollama_url(cfg)} или моделей пока нет.")
 
+    def _check_updates(self):
+        self.update_status.setText("Проверяю…")
+        self.btn_update_now.hide()
+        self.update_release = None
+        self.checker.run({"github_token": self.github_token.text().strip()})
+
+    def _update_found(self, release):
+        self.update_status.setText(f"Доступна версия {release.version}.")
+        self.btn_update_now.show()
+        self.btn_update_now.clicked.disconnect()
+        self.btn_update_now.clicked.connect(lambda: (setattr(self, "update_release", release), self.accept()))
+
     def _check_calendar(self):
         from . import calendar_ics
 
@@ -543,5 +596,7 @@ class SettingsDialog(QDialog):
             todoist_token=self.todoist.text().strip(),
             obsidian_dir=self.obsidian.text().strip(),
             obsidian_auto=self.obsidian_auto.isChecked(),
+            update_check=self.update_check.isChecked(),
+            github_token=self.github_token.text().strip(),
         )
         return cfg

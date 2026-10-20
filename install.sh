@@ -23,6 +23,16 @@ if ((!BUNDLE)); then
         missing+=(python3-venv)
     fi
 fi
+# пакет .deb уже стоит: копия в домашней папке перекроет его ярлык в меню
+if [ -x /opt/call-summarizer/call-summarizer ]; then
+    echo "Внимание: в системе уже установлен пакет call-summarizer (.deb)."
+    echo "Копия в домашней папке будет запускаться из меню вместо него."
+    if [ -t 0 ]; then
+        read -r -p "Всё равно поставить копию в домашнюю папку? [y/N] " answer
+        [[ "$answer" =~ ^[yYдД] ]] || { echo "Отменено. Обновить пакет: sudo apt install ./call-summarizer_*.deb"; exit 0; }
+    fi
+fi
+
 if ((${#missing[@]})); then
     echo "Не хватает системных пакетов. Установите их и запустите скрипт снова:"
     echo "    sudo apt install ${missing[*]}"

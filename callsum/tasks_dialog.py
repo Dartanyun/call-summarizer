@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from . import export, trackers
 from .storage import Call
-from .widgets import set_icon
+from .widgets import fix_row_heights, set_icon
 
 
 class _Sender(QObject):
@@ -63,7 +63,8 @@ class TasksDialog(QDialog):
             item.setCheckState(Qt.CheckState.Unchecked if t.done else Qt.CheckState.Checked)
             item.setToolTip(t.text)
             self.list.addItem(item)
-        self.list.setMinimumHeight(min(320, 40 + 34 * len(self.tasks)))
+        fix_row_heights(self.list, 34)
+        self.list.setMinimumHeight(min(320, 16 + 35 * len(self.tasks)))
         v.addWidget(self.list, 1)
 
         self.status = QLabel()

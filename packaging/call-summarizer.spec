@@ -19,7 +19,7 @@ datas = (
 )
 # своих правил для PyInstaller у этих библиотек нет: забираем их .so/.dll явно
 binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("sherpa_onnx")
-hiddenimports = ["callsum.selfcheck", "callsum.kde_hotkey", "callsum.help_view", "callsum.tasks_dialog"]
+hiddenimports = ["callsum.selfcheck", "callsum.kde_hotkey", "callsum.help_view", "callsum.tasks_dialog", "callsum.installs"]
 if IS_WIN:
     datas += collect_data_files("soundcard")  # описание WASAPI для cffi (mediafoundation.py.h)
     hiddenimports += ["callsum.audio_win", "callsum.callwatch_win", "callsum.hotkey_win"]

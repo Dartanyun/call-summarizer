@@ -302,10 +302,10 @@ QPushButton#Link {{ background: transparent; border: none; color: {accent}; padd
 QPushButton#Link:hover {{ text-decoration: underline; }}
 QPushButton#NavButton {{ padding: 7px 10px; }}
 QListWidget#SideNav {{ background: transparent; border: none; outline: none; }}
-QListWidget#SideNav::item {{ padding: 7px 8px; border-radius: 7px; margin: 1px 0; }}
+QListWidget#SideNav::item {{ padding: 0 8px; border-radius: 7px; }}
 QListWidget#SideNav::item:hover {{ background: {hover}; }}
 QListWidget#SideNav::item:selected {{ background: {accent_soft}; color: {text}; }}
-QListWidget#Tasks::item {{ padding: 6px 4px; }}
+QListWidget#Tasks::item {{ padding: 0 4px; }}
 QPushButton#NavButton:checked {{ background: {accent_soft}; border: 1px solid {accent}; color: {text}; }}
 
 QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 6px; }}

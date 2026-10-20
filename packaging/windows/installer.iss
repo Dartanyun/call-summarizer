@@ -64,3 +64,5 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\CallSummarizer.exe"; Description: "{cm:LaunchProgram,Саммари созвонов}"; Flags: nowait postinstall skipifsilent
+; обновление из самой программы идёт тихо (/SILENT) — после него программа запускается снова
+Filename: "{app}\CallSummarizer.exe"; Flags: nowait skipifnotsilent

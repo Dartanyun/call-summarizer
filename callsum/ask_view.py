@@ -47,13 +47,13 @@ def link_citations(md: str, calls: dict[str, Call]) -> str:
         call = calls.get(m.group(1))
         if call is None:
             return ""
-        name = call.title if len(call.title) <= 40 else call.title[:38].rstrip() + "…"
+        name = call.title if len(call.title) <= 32 else call.title[:30].rstrip() + "…"
         if m.group(2):
             secs = sections.seconds(m.group(2))
             label = f"{secs // 3600}:{secs % 3600 // 60:02d}:{secs % 60:02d}" if secs >= 3600 else f"{secs // 60}:{secs % 60:02d}"
-            return f" [{name} · {label}](call:{call.id}@{secs})"
-        return f" [{name}](call:{call.id})"
-    return ask.CITATION.sub(repl, md)
+            return f"[{name} · {label}](call:{call.id}@{secs})"
+        return f"[{name}](call:{call.id})"
+    return re.sub(r"[ \t]{2,}", " ", ask.CITATION.sub(repl, md))
 
 
 def _page_header(title: str, sub: str) -> tuple[QVBoxLayout, QLabel]:
@@ -252,8 +252,8 @@ class AskPage(QWidget):
         calls = {c.id: c for c in self._get_calls()}
         parts = []
         for q, a in self.history + ([(self._pending, self._live or "*Ищу в созвонах…*")] if self._pending else []):
-            parts.append(f"**Вы:** {q}\n\n{link_citations(a, calls)}")
-        render.show_summary(self.view, "\n\n---\n\n".join(parts))
+            parts.append(f"### {q}\n\n{link_citations(a, calls)}")
+        render.show_summary(self.view, "\n\n".join(parts), keep_title=True)
         sb = self.view.verticalScrollBar()
         sb.setValue(sb.maximum())
 

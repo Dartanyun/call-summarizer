@@ -147,8 +147,8 @@ def _donut(shares: list[tuple[float, str]], size: int = 172) -> QImage:
     return img
 
 
-def show_stats(view: QTextBrowser, st, colors: dict[str, str]) -> None:
-    """st — stats.Stats; colors — цвет каждого участника по имени."""
+def show_stats(view: QTextBrowser, st, colors: dict[str, str], narrow: bool = False) -> None:
+    """st — stats.Stats; colors — цвет каждого участника по имени; narrow — диаграмма над таблицей."""
     from PySide6.QtCore import QUrl
 
     doc = view.document()
@@ -158,7 +158,9 @@ def show_stats(view: QTextBrowser, st, colors: dict[str, str]) -> None:
     total = st.talk_total or 1.0
 
     def card(value: str, label: str) -> str:
-        return (f'<td style="padding:0 26px 0 0"><p style="margin:0; font-size:17pt; font-weight:700">{value}</p>'
+        size = "14pt" if narrow else "17pt"
+        return (f'<td style="padding:0 {18 if narrow else 26}px 0 0"><p style="margin:0; font-size:{size}; '
+                f'font-weight:700; white-space:nowrap">{value}</p>'
                 f'<p style="margin:2px 0 0 0; color:{muted}">{html.escape(label)}</p></td>')
 
     talk_pct = round(st.talk_total / st.duration * 100) if st.duration else 0
@@ -166,19 +168,21 @@ def show_stats(view: QTextBrowser, st, colors: dict[str, str]) -> None:
                      card(str(st.turns), "реплик"), card(str(st.interruptions), "перебиваний")])
     head = "".join(f'<th align="{a}" style="color:{faint}; font-weight:600; padding:0 14px 6px 0">{h}</th>'
                    for h, a in (("", "left"), ("Доля", "right"), ("Время", "right"), ("Слов/мин", "right"),
-                                ("Реплик", "right"), ("Перебивал(а)", "right"), ("Самый длинный монолог", "left")))
-    rows = []
+                                ("Реплик", "right"), ("Перебивал(а)", "right")))
+    rows, monologues = [], []
     for x in st.people:
         color = colors.get(x.name, theme.C["accent"])
         at = int(x.longest_at)
         when = f"{at // 3600}:{at % 3600 // 60:02d}:{at % 60:02d}" if at >= 3600 else f"{at // 60}:{at % 60:02d}"
         mono = (f'<a href="t:{x.longest_at}" style="color:{theme.C["accent"]}; text-decoration:none">'
                 f"{when} · {_dur(x.longest)}</a>") if x.longest else "—"
+        if x.longest:
+            monologues.append(f"<b>{html.escape(x.name)}</b> — {mono}")
         cells = [f'<span style="color:{color}">●</span>&nbsp; <b>{html.escape(x.name)}</b>',
                  f"{round(x.talk / total * 100)}%", _dur(x.talk), str(x.wpm or "—"), str(x.turns),
-                 str(x.interruptions), mono]
+                 str(x.interruptions)]
         rows.append("<tr>" + "".join(
-            f'<td align="{"left" if i in (0, 6) else "right"}" style="padding:5px 14px 5px 0">{c}</td>'
+            f'<td align="{"left" if i == 0 else "right"}" style="padding:5px 16px 5px 0">{c}</td>'
             for i, c in enumerate(cells)) + "</tr>")
     fillers = []
     for x in st.people:
@@ -194,9 +198,12 @@ def show_stats(view: QTextBrowser, st, colors: dict[str, str]) -> None:
 
     body = (f'<table cellspacing="0" cellpadding="0"><tr>{cards}</tr></table>'
             + h("Кто сколько говорил")
-            + '<table cellspacing="0" cellpadding="0"><tr><td valign="middle" style="padding-right:22px">'
-              '<img src="stats:donut" width="172" height="172"></td><td valign="middle">'
-              f'<table cellspacing="0" cellpadding="0"><tr>{head}</tr>{"".join(rows)}</table></td></tr></table>'
+            + ('<p><img src="stats:donut" width="172" height="172"></p>'
+               f'<table cellspacing="0" cellpadding="0"><tr>{head}</tr>{"".join(rows)}</table>' if narrow else
+               '<table cellspacing="0" cellpadding="0"><tr><td valign="middle" style="padding-right:22px">'
+               '<img src="stats:donut" width="172" height="172"></td><td valign="middle">'
+               f'<table cellspacing="0" cellpadding="0"><tr>{head}</tr>{"".join(rows)}</table></td></tr></table>')
+            + (h("Самые длинные монологи") + "<p>" + " &nbsp;·&nbsp; ".join(monologues) + "</p>" if monologues else "")
             + (h("Слова-паразиты") + "".join(fillers) if fillers else "")
             + (h("Чаще всего звучало") + f"<p>{chips}</p>" if chips else "")
             + f'<p style="margin-top:22px; color:{faint}">Время считается по распознанным репликам; '

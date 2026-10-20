@@ -195,6 +195,11 @@ DEFAULTS = {
     "todoist_token": "",
     "obsidian_dir": "",        # папка заметок Obsidian
     "obsidian_auto": False,    # сохранять туда каждое готовое саммари
+    # обновления
+    "update_check": True,      # раз в день смотреть, нет ли новой версии
+    "github_token": "",        # токен для закрытого репозитория (только чтение)
+    "update_last_check": "",
+    "update_skipped": "",      # версия, которую попросили пропустить
 }
 
 
