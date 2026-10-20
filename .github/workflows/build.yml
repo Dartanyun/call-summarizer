@@ -87,8 +87,15 @@ jobs:
         shell: pwsh
         run: |
           $setup = (Get-Item dist\CallSummarizer-*-setup.exe).FullName
-          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER" -Wait -PassThru
-          if ($p.ExitCode) { throw "Установщик завершился с кодом $($p.ExitCode)" }
+          # Start-Process -Wait в PowerShell 7 ждёт и дочерние процессы, а установщик запускает
+          # программу — поэтому ждём только сам установщик
+          function Run-Setup([string[]]$arguments) {
+            $p = Start-Process $setup -ArgumentList $arguments -PassThru
+            $p.WaitForExit()
+            return $p.ExitCode
+          }
+          $code = Run-Setup @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER")
+          if ($code) { throw "Установщик завершился с кодом $code" }
           $dir = Join-Path $env:LOCALAPPDATA "Programs\CallSummarizer"
           $app = Join-Path $dir "CallSummarizer.exe"
           # после тихой установки (так ставятся обновления из программы) программа запускается сама
@@ -110,8 +117,8 @@ jobs:
           # установщик закрывает её, ставит новую версию и запускает снова
           Start-Process $app
           if (-not (Wait-App)) { throw "Программа не запустилась" }
-          $p = Start-Process $setup -ArgumentList "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
-          if ($p.ExitCode) { throw "Обновление поверх завершилось с кодом $($p.ExitCode)" }
+          $code = Run-Setup @("/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+          if ($code) { throw "Обновление поверх завершилось с кодом $code" }
           if (-not (Wait-App)) { throw "После обновления программа не запустилась снова" }
           Stop-Process -Name CallSummarizer -Force; Start-Sleep 2
 
