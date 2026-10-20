@@ -20,6 +20,7 @@ from .audio_base import AudioError, level_of
 
 SAMPLE_RATE = 48000
 BLOCK = SAMPLE_RATE // 20  # 50 мс — и для индикатора, и для записи
+RATES = (48000, 44100, 16000)
 
 
 def _sc():
@@ -70,52 +71,88 @@ class TrackRecorder:
         self._error: str | None = None
 
     def start(self):
-        cmd = [
-            osdeps.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
-            "-c:a", "libopus", "-b:a", "32k", "-application", "voip", str(self.out_path),
-        ]
-        try:
-            self._enc = osdeps.popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.PIPE)
-        except OSError as e:
-            raise AudioError(f"Не удалось запустить ffmpeg: {e}") from e
+        # устройство открывается в своём потоке (там свой COM), ffmpeg запускается уже под его формат
+        self.format = ""
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def _encoder(self, rate: int) -> subprocess.Popen:
+        cmd = [
+            osdeps.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "f32le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
+            "-c:a", "libopus", "-b:a", "32k", "-application", "voip", str(self.out_path),
+        ]
+        return osdeps.popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    @staticmethod
+    def _open(source):
+        """Открывает устройство в формате, который примет Windows.
+
+        soundcard меняет в формате устройства число каналов, но не маску каналов, поэтому
+        «2 канала» для микрофона-массива из 4 (частое дело в ноутбуках) или для вывода 5.1
+        Windows отвергает как «invalid argument». Сначала просим все каналы устройства (их
+        сводим в моно сами), потом пробуем другие сочетания."""
+        own = int(getattr(source, "channels", 0) or 0)
+        channels = list(dict.fromkeys(c for c in (own, 2, 1, 4, 6, 8) if c > 0))
+        last: Exception | None = None
+        for rate in RATES:
+            for ch in channels:
+                try:
+                    rec = source.recorder(samplerate=rate, channels=ch, blocksize=rate // 20)
+                    return rec.__enter__(), rec, rate, ch
+                except (RuntimeError, TypeError, ValueError) as e:
+                    last = e
+        raise last or RuntimeError("устройство не открылось")
 
     def _run(self):
         # soundcard работает через COM; в своём потоке его нужно инициализировать отдельно
         ole32 = ctypes.windll.ole32 if osdeps.IS_WIN else None
         if ole32:
             ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+        ctx = None
         try:
             sc = _sc()
             source = sc.get_microphone(self.device, include_loopback=self.loopback)
-            channels = max(1, min(2, getattr(source, "channels", 1) or 1))
-            with source.recorder(samplerate=SAMPLE_RATE, channels=channels, blocksize=BLOCK) as rec:
-                while not self._stop.is_set():
-                    data = rec.record(numframes=BLOCK)
-                    # стерео (у «петли» почти всегда) сводим в моно, иначе потерялся бы один канал
-                    mono = data.mean(axis=1) if data.ndim == 2 else data
-                    self.level = level_of(mono)
-                    self.peak_seen = max(self.peak_seen, self.level)
-                    try:
-                        self._enc.stdin.write(np.ascontiguousarray(mono, dtype="<f4").tobytes())
-                    except OSError:
-                        # ffmpeg закрылся; Windows сообщает об этом как «[Errno 22] Invalid argument» —
-                        # настоящая причина в выводе самого ffmpeg
-                        if not self._stop.is_set():
-                            self._error = self._encoder_message()
-                        return
+            rec, ctx, rate, ch = self._open(source)
+            self.format = f"{ch} кан., {rate} Гц"
+            try:
+                self._enc = self._encoder(rate)
+            except OSError as e:
+                self._error = f"Не удалось запустить ffmpeg: {e}"
+                return
+            block = rate // 20
+            while not self._stop.is_set():
+                data = rec.record(numframes=block)
+                # все каналы устройства (у «петли» и микрофона-массива их несколько) сводим в моно
+                mono = data.mean(axis=1) if data.ndim == 2 else data
+                self.level = level_of(mono)
+                self.peak_seen = max(self.peak_seen, self.level)
+                try:
+                    self._enc.stdin.write(np.ascontiguousarray(mono, dtype="<f4").tobytes())
+                except OSError:
+                    # ffmpeg закрылся; Windows сообщает об этом как «[Errno 22] Invalid argument» —
+                    # настоящая причина в выводе самого ffmpeg
+                    if not self._stop.is_set():
+                        self._error = self._encoder_message()
+                    return
         except Exception as e:  # noqa: BLE001 — показываем пользователю любую ошибку устройства
             if not self._stop.is_set():
-                self._error = f"{e.__class__.__name__}: {e}" if str(e) else e.__class__.__name__
+                text = str(e) or e.__class__.__name__
+                self._error = ("Windows не дала открыть устройство в подходящем формате (invalid argument). "
+                               "Попробуйте выбрать другое устройство в «Настройках» → «Запись»."
+                               if text == "invalid argument" else text)
         finally:
             self.level = 0.0
-            try:
-                self._enc.stdin.close()  # ffmpeg допишет и закроет файл
-            except OSError:
-                pass
+            if ctx is not None:
+                try:
+                    ctx.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001 — устройство уже могло пропасть
+                    pass
+            if self._enc is not None:
+                try:
+                    self._enc.stdin.close()  # ffmpeg допишет и закроет файл
+                except OSError:
+                    pass
             if ole32:
                 ole32.CoUninitialize()
 

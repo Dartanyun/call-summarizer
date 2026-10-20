@@ -109,7 +109,8 @@ def run(args: list[str]) -> int:
 
     def recorder_pipe():
         """Запись дорожки целиком, как во время созвона, — только вместо устройства пробный звук.
-        Папка — с кириллицей в имени, как бывает у профилей Windows."""
+        Устройство — как микрофон-массив ноутбука: 4 канала, другое число каналов Windows
+        отвергает («invalid argument»). Папка — с кириллицей, как бывает у профилей Windows."""
         import time
 
         import numpy as np
@@ -119,6 +120,9 @@ def run(args: list[str]) -> int:
         class Rec:
             t = 0
 
+            def __init__(self, rate, channels):
+                self.rate, self.channels = rate, channels
+
             def __enter__(self):
                 return self
 
@@ -126,16 +130,19 @@ def run(args: list[str]) -> int:
                 return False
 
             def record(self, numframes):
-                time.sleep(numframes / audio_win.SAMPLE_RATE)
+                time.sleep(numframes / self.rate)
                 n = np.arange(self.t, self.t + numframes)
                 self.t += numframes
-                return (0.2 * np.sin(2 * np.pi * 440 * n / audio_win.SAMPLE_RATE)).astype(np.float32)[:, None]
+                wave = (0.2 * np.sin(2 * np.pi * 440 * n / self.rate)).astype(np.float32)
+                return np.repeat(wave[:, None], self.channels, axis=1)
 
         class Source:
-            channels = 1
+            channels = 4
 
-            def recorder(self, **_kw):
-                return Rec()
+            def recorder(self, samplerate, channels, blocksize):
+                if channels != 4:
+                    raise RuntimeError("invalid argument")
+                return Rec(samplerate, channels)
 
         class FakeSoundcard:
             @staticmethod
@@ -158,7 +165,7 @@ def run(args: list[str]) -> int:
 
             secs = audio.probe_duration(out)
             assert secs > 1.0, f"записалось {secs:.2f} с"
-            return f"{secs:.1f} с в Ogg/Opus, уровень {tr.peak_seen:.2f}"
+            return f"{secs:.1f} с в Ogg/Opus, устройство открыто как {tr.format}, уровень {tr.peak_seen:.2f}"
         finally:
             audio_win._sc = real
 
