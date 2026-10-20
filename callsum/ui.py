@@ -1250,6 +1250,10 @@ class MainWindow(QMainWindow):
             act.setChecked(key == (current or templates.AUTO))
             if key == templates.AUTO:
                 sub.addSeparator()
+        a = m.addAction(theme.icon("users", theme.C["muted"]), "Определить говорящих заново",
+                        lambda: self.redo_speakers(0))
+        a.setEnabled(call.has_transcript() and bool(call.tracks()) and not busy and self.cfg.get("diarize", True))
+        a.setToolTip("Пригодится, если один человек оказался несколькими спикерами")
         a = m.addAction(theme.icon("users", theme.C["muted"]), "Указать число участников…", self.recount_speakers)
         a.setEnabled(call.has_transcript() and bool(call.tracks()) and not busy and self.cfg.get("diarize", True))
         m.addSeparator()
@@ -1450,11 +1454,30 @@ class MainWindow(QMainWindow):
         for s in sids:
             call.rename_speaker(s, new)
         self._remember_voice(call, sids, new)
+        merged = self._merge_same_names(call, new)
         self._rendered.clear()
+        self._timeline_key = None
+        self._chips_key = None
         self.refresh_item(call.id)
         self.show_current()
-        self.toast.show_message("Имя обновлено в транскрипте и саммари." if call.summary()
-                                else "Имя обновлено в транскрипте.")
+        if merged:
+            self.toast.show_message(f"«{new}» — один человек: спикеры объединены.")
+        else:
+            self.toast.show_message("Имя обновлено в транскрипте и саммари." if call.summary()
+                                    else "Имя обновлено в транскрипте.")
+
+    @staticmethod
+    def _merge_same_names(call: storage.Call, name: str) -> bool:
+        """Спикеры с одинаковым именем — один человек: сливаем их по-настоящему (одна метка, один цвет)."""
+        if not name:
+            return False
+        sids = [s for s, n in call.speaker_names().items() if n == name and s != speakers.ME]
+        if len(sids) < 2:
+            return False
+        talk = speakers.talk_time(call.paragraphs())
+        keep = max(sids, key=lambda s: talk.get(s, 0.0))
+        call.merge_speakers([s for s in sids if s != keep], keep)
+        return True
 
     def _remember_voice(self, call: storage.Call, sids: list[str], name: str):
         """Имя, которое дал пользователь, запоминаем вместе с голосом — в следующий раз узнаем сами."""
@@ -1483,7 +1506,15 @@ class MainWindow(QMainWindow):
         )
         if not ok:
             return
-        call.save(num_speakers=0 if item == items[0] else int(item))
+        self.redo_speakers(0 if item == items[0] else int(item))
+
+    def redo_speakers(self, count: int):
+        """Определить говорящих заново (count = 0 — сколько их, программа решит сама).
+        Имена сбросятся, но запомненные голоса подпишутся снова."""
+        call = self.current_call()
+        if not call or self.pipeline.is_busy(call.id):
+            return
+        call.save(num_speakers=count)
         stages = ["speakers"] + (["summarize"] if call.summary() and llm.ready(self.cfg) else [])
         self.pipeline.enqueue(call, stages)
         self.refresh_item(call.id)

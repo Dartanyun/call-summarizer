@@ -536,7 +536,12 @@ class SettingsDialog(QDialog):
         for name in sorted(profiles, key=lambda n: (n != voices.OWN_VOICE, n.lower())):
             calls = int(profiles[name].get("calls", 1))
             label = "Я (ваш голос)" if name == voices.OWN_VOICE else name
-            item = QListWidgetItem(f"{label}  ·  {calls} созв.")
+            n = len(voices.variants(profiles[name]))
+            extra = f"  ·  {n} варианта голоса" if 2 <= n <= 4 else ""
+            item = QListWidgetItem(f"{label}  ·  {calls} созв.{extra}")
+            if n > 1:
+                item.setToolTip("Голос звучал по-разному (другой микрофон, гарнитура, комната) — "
+                                "программа помнит все варианты и узнаёт по любому.")
             item.setData(Qt.ItemDataRole.UserRole, name)
             self.voices_list.addItem(item)
         if not profiles:

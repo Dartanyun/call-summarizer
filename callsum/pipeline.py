@@ -145,10 +145,18 @@ class Pipeline(QObject):
                 models = speakers.ensure_models(lambda text, frac: self._emit(call, text, frac))
                 label = "Определение говорящих по голосу…"
                 self._emit(call, label, 0.0)
+                wanted = int(call.meta.get("num_speakers") or 0)
                 turns = speakers.diarize(
-                    audio_data, int(call.meta.get("num_speakers") or 0),
+                    audio_data, wanted,
                     lambda frac: self._emit(call, label, frac), cancelled, models,
                 )
+                if not wanted:
+                    # один человек нередко распадается на нескольких «спикеров» — склеиваем похожие голоса;
+                    # если в календаре известен список приглашённых, больше их спикеров быть не должно
+                    self._emit(call, "Объединение похожих голосов…", None)
+                    invited = len((call.meta.get("calendar") or {}).get("attendees") or [])
+                    turns = speakers.merge_clusters(turns, audio_data, models,
+                                                    max_speakers=max(0, invited - 1) if me_by_track else invited)
             else:
                 turns = speakers.activity_turns(audio_data)
         labels = speakers.label_words(words, turns, me_by_track) if turns is not None else [None] * len(words)
@@ -177,8 +185,18 @@ class Pipeline(QObject):
         remote = {sid: e for sid, e in embs.items() if sid != speakers.ME}
         # на дорожке собеседников вашего голоса нет — не даём спутать собеседника с вами
         exclude = {voices.OWN_VOICE} if me_by_track else set()
-        for sid, (name, _sim) in voices.match(remote, exclude).items():
-            call.rename_speaker(sid, name, auto=True, source="voice")
+        by_name: dict[str, list[str]] = {}
+        for sid, (name, _sim) in voices.match_all(remote, exclude).items():
+            by_name.setdefault(name, []).append(sid)
+        talk = speakers.talk_time(paragraphs)
+        for name, sids in by_name.items():
+            keep = max(sids, key=lambda s: talk.get(s, 0.0))
+            # несколько говорящих узнаны как один человек — это он, разбитый на части;
+            # склеиваем только тех, кто похож и друг на друга, остальных не трогаем
+            same = [s for s in sids if s != keep and voices.similarity(remote[s], remote[keep]) >= 0.5]
+            if same:
+                call.merge_speakers(same, keep)
+            call.rename_speaker(keep, name, auto=True, source="voice")
 
     def _match_calendar(self, call: Call, cfg: dict):
         """Ищем в календаре встречу, во время которой шла запись: её название и участники."""

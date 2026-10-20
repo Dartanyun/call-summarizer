@@ -1,5 +1,6 @@
 """Библиотека созвонов: каждая запись — отдельная папка с аудио, транскриптом и саммари."""
 
+import bisect
 import json
 import re
 import threading
@@ -169,6 +170,41 @@ class Call:
         summary = self.summary()
         if summary and old and new and old != new:
             self.write_summary(_word_pattern(old).sub(lambda _m: new, summary))
+
+    def merge_speakers(self, sids: list[str], into: str) -> None:
+        """Один человек оказался несколькими спикерами: все его реплики — под меткой into."""
+        sids = [s for s in sids if s != into and s != speakers.ME]
+        if not sids or into == speakers.ME:
+            return
+        paras = self.paragraphs()
+        starts = [p["start"] for p in paras]
+        labels = []
+        words = self.words()
+        for w in words:
+            i = bisect.bisect_right(starts, w["s"] + 0.01) - 1
+            sid = paras[i].get("speaker") if i >= 0 else None
+            labels.append(into if sid in sids else sid)
+        # слова заново собираются в абзацы: реплики одного человека подряд сливаются
+        self.write_paragraphs(speakers.build_paragraphs(words, labels))
+        names = dict(self.meta.get("speakers") or {})
+        if into not in names:
+            named = next((names[s] for s in sids if s in names), None)
+            if named:
+                names[into] = named
+        for s in sids:
+            names.pop(s, None)
+        self.save(speakers=names)
+        embs = self.voice_embeddings()
+        vectors = [embs[s] for s in [into, *sids] if s in embs]
+        if vectors:
+            import numpy as np
+
+            m = np.mean(np.asarray(vectors, dtype=np.float32), axis=0)
+            embs[into] = [round(float(x), 5) for x in m / (np.linalg.norm(m) or 1.0)]
+            for s in sids:
+                embs.pop(s, None)
+            self.write_voice_embeddings(embs)
+        self._write_transcript_text()
 
     # исправления распознавания: «Эпиция» → «API» во всём транскрипте этого созвона
     def add_correction(self, wrong: str, right: str) -> None:

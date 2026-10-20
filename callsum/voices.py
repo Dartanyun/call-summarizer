@@ -1,4 +1,8 @@
-"""Запомненные голоса: «отпечаток» голоса (вектор TitaNet) для каждого имени.
+"""Запомненные голоса: «отпечатки» голоса (векторы TitaNet) для каждого имени.
+
+У одного человека может быть несколько вариантов голоса: гарнитура и ноутбук, телефон, другая
+комната звучат по-разному. Поэтому для имени хранится до MAX_VARIANTS «отпечатков», а голос
+считается узнанным, если похож хотя бы на один из них.
 
 Хранятся только на этом компьютере, в ~/.local/share/call-summarizer/voices.json.
 """
@@ -18,6 +22,8 @@ VOICES_FILE = DATA_DIR / "voices.json"
 MATCH = 0.65
 MARGIN = 0.10
 MAX_WEIGHT = 20  # старые созвоны перестают перевешивать новые
+MAX_VARIANTS = 4
+VARIANT_SIMILARITY = 0.75  # настолько похожий голос — тот же вариант, иначе новый
 OWN_VOICE = "Я"
 _lock = threading.Lock()
 
@@ -42,19 +48,37 @@ def _save(profiles: dict[str, dict]) -> None:
     tmp.replace(VOICES_FILE)
 
 
+def variants(profile: dict) -> list[dict]:
+    """Варианты голоса: [{"emb": вектор, "n": сколько раз пополнялся}]. Старые профили — один вариант."""
+    if profile.get("variants"):
+        return [v for v in profile["variants"] if v.get("emb")]
+    return [{"emb": profile["emb"], "n": int(profile.get("n", 1))}] if profile.get("emb") else []
+
+
+def _round(v: np.ndarray) -> list[float]:
+    return [round(float(x), 5) for x in v]
+
+
 def remember(name: str, embedding) -> None:
-    """Добавляет голос к профилю имени (скользящее среднее)."""
+    """Добавляет голос к профилю имени: к похожему варианту (скользящее среднее) или новым вариантом."""
     emb = _unit(embedding)
     with _lock:
         profiles = load()
-        p = profiles.get(name)
-        if p and len(p["emb"]) == emb.size:
-            n = min(int(p.get("n", 1)), MAX_WEIGHT)
-            emb = _unit(_unit(p["emb"]) * n + emb)
-            count = int(p.get("calls", n)) + 1
+        p = profiles.get(name) or {}
+        found = [v for v in variants(p) if len(v["emb"]) == emb.size]
+        sims = [float(_unit(v["emb"]) @ emb) for v in found]
+        if found and max(sims) >= VARIANT_SIMILARITY:
+            v = found[sims.index(max(sims))]
+            n = min(int(v.get("n", 1)), MAX_WEIGHT)
+            v["emb"], v["n"] = _round(_unit(_unit(v["emb"]) * n + emb)), n + 1
+        elif len(found) < MAX_VARIANTS:
+            found.append({"emb": _round(emb), "n": 1})
         else:
-            n, count = 0, 1
-        profiles[name] = {"emb": [round(float(x), 5) for x in emb], "n": n + 1, "calls": count,
+            # мест нет: вливаем в самый похожий вариант
+            v = found[sims.index(max(sims))]
+            n = min(int(v.get("n", 1)), MAX_WEIGHT)
+            v["emb"], v["n"] = _round(_unit(_unit(v["emb"]) * n + emb)), n + 1
+        profiles[name] = {"variants": found, "calls": int(p.get("calls", p.get("n", 0) or 0)) + 1,
                           "updated": datetime.now().isoformat(timespec="seconds")}
         _save(profiles)
 
@@ -71,25 +95,35 @@ def forget_all() -> None:
         _save({})
 
 
-def match(embeddings: dict[str, list[float]], exclude: set[str] = frozenset()) -> dict[str, tuple[str, float]]:
-    """Сопоставляет говорящих созвона с запомненными голосами: {sid: (имя, сходство)}."""
-    profiles = {k: _unit(v["emb"]) for k, v in load().items() if k not in exclude}
+def match_all(embeddings: dict[str, list[float]], exclude: set[str] = frozenset()) -> dict[str, tuple[str, float]]:
+    """Каждому говорящему — запомненное имя, если голос уверенно похож на него: {sid: (имя, сходство)}.
+    Одно имя может достаться нескольким говорящим — это один человек, разбитый на части."""
+    profiles = {name: [_unit(v["emb"]) for v in variants(p)] for name, p in load().items() if name not in exclude}
     if not profiles or not embeddings:
         return {}
-    pairs = []
+    result = {}
     for sid, emb in embeddings.items():
         e = _unit(emb)
-        sims = sorted(((float(e @ p), name) for name, p in profiles.items() if p.size == e.size), reverse=True)
+        sims = sorted(((max(float(e @ v) for v in vs if v.size == e.size), name)
+                       for name, vs in profiles.items() if any(v.size == e.size for v in vs)), reverse=True)
         if not sims:
             continue
         best, name = sims[0]
         second = sims[1][0] if len(sims) > 1 else -1.0
         if best >= MATCH and best - second >= MARGIN:
-            pairs.append((best, sid, name))
-    # одно имя — одному говорящему: сначала самые уверенные совпадения
+            result[sid] = (name, best)
+    return result
+
+
+def match(embeddings: dict[str, list[float]], exclude: set[str] = frozenset()) -> dict[str, tuple[str, float]]:
+    """Как match_all, но одно имя — одному говорящему (самому уверенному)."""
     result, used = {}, set()
-    for sim, sid, name in sorted(pairs, reverse=True):
-        if sid not in result and name not in used:
+    for sid, (name, sim) in sorted(match_all(embeddings, exclude).items(), key=lambda x: -x[1][1]):
+        if name not in used:
             result[sid] = (name, sim)
             used.add(name)
     return result
+
+
+def similarity(a, b) -> float:
+    return float(_unit(a) @ _unit(b))

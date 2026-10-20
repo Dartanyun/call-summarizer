@@ -66,10 +66,23 @@ class SpeakerDialog(QDialog):
             row.addStretch()
             v.addLayout(row)
 
-        tip = "Если один человек разбит на двух спикеров — дайте им одинаковое имя, и они объединятся."
         if others:
-            tip += " Уже есть: " + ", ".join(others) + "."
-        tip_l = QLabel(tip)
+            # один человек нередко распадается на нескольких спикеров — объединить в один клик
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            same = QLabel("Это тот же человек, что и:")
+            same.setProperty("muted", True)
+            row.addWidget(same)
+            for name in others[:6]:
+                b = QPushButton(name)
+                b.setObjectName("Chip")
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.setToolTip(f"Объединить со спикером «{name}»: все реплики окажутся под одним именем")
+                b.clicked.connect(lambda _=False, n=name: (self.edit.setText(n), self.accept()))
+                row.addWidget(b)
+            row.addStretch()
+            v.addLayout(row)
+        tip_l = QLabel("Один человек разбит на нескольких спикеров? Дайте им одно имя — они объединятся.")
         tip_l.setObjectName("Hint")
         tip_l.setWordWrap(True)
         v.addWidget(tip_l)

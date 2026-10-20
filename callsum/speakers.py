@@ -32,8 +32,17 @@ EMBEDDING = {
     "sha256": "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e",
     "file": "nemo_en_titanet_small.onnx",
 }
-# Подобрано на тестовых созвонах: при большем пороге спикеров меньше
-CLUSTER_THRESHOLD = 0.5
+# Порог кластеризации: чем больше, тем меньше спикеров. 0.5 дробил одного человека на несколько;
+# на настоящем 16-минутном созвоне 0.8 дал 15 спикеров вместо 42 и ни разу не слил разных людей,
+# а с 0.9 разные люди уже начинали сливаться.
+CLUSTER_THRESHOLD = 0.8
+# После кластеризации: спикеров с настолько похожими голосами считаем одним человеком,
+# а «спикеров» короче MIN_TALK секунд (обрывки, «угу») присоединяем к самому похожему.
+MERGE_SIMILARITY = 0.7
+MIN_TALK = 6.0
+ABSORB_SIMILARITY = 0.4
+# «спикер» с речью короче этого — почти всегда обрывок соседней реплики: голос по нему не понять
+FRAGMENT_TALK = 3.0
 SAMPLE_RATE = 16000
 ME = "me"
 
@@ -124,6 +133,106 @@ def diarize(audio: np.ndarray, num_speakers: int, on_progress: Callable[[float],
     if cancelled():
         raise Cancelled()
     return [(r.start, r.end, r.speaker) for r in result.sort_by_start_time()]
+
+
+def _extractor(models: tuple[Path, Path]):
+    import sherpa_onnx as so
+
+    threads = max(1, (os.cpu_count() or 4) - 2)
+    return so.SpeakerEmbeddingExtractor(so.SpeakerEmbeddingExtractorConfig(model=str(models[1]), num_threads=threads))
+
+
+def _embed(extractor, chunk: np.ndarray) -> np.ndarray:
+    stream = extractor.create_stream()
+    stream.accept_waveform(SAMPLE_RATE, chunk)
+    stream.input_finished()
+    v = np.asarray(extractor.compute(stream), dtype=np.float32)
+    return v / (np.linalg.norm(v) or 1.0)
+
+
+def _mean_voice(spans: list[tuple[float, float]], audio: np.ndarray, extractor, limit: float = 30.0) -> np.ndarray | None:
+    """Средний «отпечаток» по самым длинным отрезкам (края обрезаем — там бывает чужая речь)."""
+    vectors, total = [], 0.0
+    for s, e in sorted(spans, key=lambda x: x[0] - x[1]):
+        s, e = s + 0.2, e - 0.2
+        chunk = audio[int(s * SAMPLE_RATE):int(e * SAMPLE_RATE)]
+        if chunk.size < SAMPLE_RATE:
+            continue
+        vectors.append(_embed(extractor, chunk))
+        total += e - s
+        if total >= limit or len(vectors) >= 12:
+            break
+    if not vectors:
+        return None
+    m = np.mean(vectors, axis=0)
+    return m / (np.linalg.norm(m) or 1.0)
+
+
+def merge_clusters(turns: list[tuple[float, float, int]], audio: np.ndarray, models: tuple[Path, Path],
+                   max_speakers: int = 0) -> list[tuple[float, float, int]]:
+    """Склеивает одного человека, разбитого на нескольких спикеров.
+
+    1. Спикеры с очень похожими голосами (MERGE_SIMILARITY) — один человек.
+    2. Если известно, сколько людей было (приглашённые из календаря), а спикеров больше — склеиваем
+       самые похожие, пока не станет столько же (но только достаточно похожих).
+    3. Короткие обрывки присоединяем к самому похожему голосу, а совсем короткие (по ним голос
+       не определить) — к тому, кто говорил рядом по времени.
+    """
+    talk: dict[int, float] = {}
+    spans: dict[int, list[tuple[float, float]]] = {}
+    for s, e, k in turns:
+        talk[k] = talk.get(k, 0.0) + e - s
+        spans.setdefault(k, []).append((s, e))
+    if len(talk) < 2:
+        return turns
+    extractor = _extractor(models)
+    voice = {k: v for k in talk if (v := _mean_voice(spans[k], audio, extractor)) is not None}
+    parent = {k: k for k in talk}
+
+    def root(k: int) -> int:
+        while parent[k] != k:
+            k = parent[k]
+        return k
+
+    def join(a: int, b: int) -> None:
+        """b — в a (a остаётся тот, кто говорил больше); голос — среднее с весом по времени речи."""
+        if talk[b] > talk[a]:
+            a, b = b, a
+        parent[b] = a
+        if a in voice and b in voice:
+            m = voice[a] * talk[a] + voice[b] * talk[b]
+            voice[a] = m / (np.linalg.norm(m) or 1.0)
+        talk[a] += talk[b]
+        voice.pop(b, None)
+
+    while True:
+        roots = [k for k in voice if root(k) == k]
+        big = [k for k in roots if talk[k] >= MIN_TALK]
+        best, pair = -1.0, None
+        for i, a in enumerate(big):
+            for b in big[i + 1:]:
+                sim = float(voice[a] @ voice[b])
+                if sim > best:
+                    best, pair = sim, (a, b)
+        too_many = max_speakers > 0 and len(big) > max_speakers
+        if pair and (best >= MERGE_SIMILARITY or (too_many and best >= 0.5)):
+            join(*pair)
+            continue
+        break
+    big = [k for k in voice if root(k) == k and talk[k] >= MIN_TALK]
+    for k in [k for k in voice if root(k) == k and talk[k] < MIN_TALK]:
+        sims = [(float(voice[k] @ voice[b]), b) for b in big]
+        if sims:
+            sim, b = max(sims)
+            if sim >= ABSORB_SIMILARITY:
+                join(b, k)
+    voiced = [(s, e, k) for s, e, k in turns if talk[root(k)] >= FRAGMENT_TALK]
+    for k in [k for k in talk if root(k) == k and (talk[k] < FRAGMENT_TALK or (k not in voice and talk[k] < MIN_TALK))]:
+        gaps = [(max(ts - e, s - te, 0.0), root(vk)) for s, e, kk in turns if kk == k
+                for ts, te, vk in voiced if root(vk) != k]
+        if gaps:
+            join(min(gaps)[1], k)
+    return [(s, e, root(k)) for s, e, k in turns]
 
 
 # ---------------- «отпечатки» голосов ----------------
@@ -238,6 +347,29 @@ def _snap_to_sentences(words: list[dict], labels: list[str | None], window: int 
     return labels
 
 
+def _fold_fragments(words: list[dict], labels: list[str | None]) -> list[str | None]:
+    """Собеседник, которому досталось меньше FRAGMENT_TALK секунд слов, — почти всегда обрывок
+    чужой реплики (кусок звука ушёл не тому кластеру). Отдаём его слова ближайшему по времени
+    другому собеседнику, а не отдельному «Спикеру 17» с одним словом."""
+    labels = list(labels)
+    talk: dict[str, float] = {}
+    for w, lab in zip(words, labels, strict=True):
+        if lab not in (None, ME):
+            talk[lab] = talk.get(lab, 0.0) + max(0.0, w["e"] - w["s"])
+    small = {lab for lab, t in talk.items() if t < FRAGMENT_TALK}
+    if not small or len(talk) - len(small) < 1:
+        return labels
+    keep = [i for i, lab in enumerate(labels) if lab in talk and lab not in small]
+    starts = [words[i]["s"] for i in keep]
+    for i, lab in enumerate(labels):
+        if lab in small:
+            j = bisect.bisect_left(starts, words[i]["s"])
+            near = [k for k in (j - 1, j) if 0 <= k < len(keep)]
+            best = min(near, key=lambda k: abs(words[keep[k]]["s"] - words[i]["s"]))
+            labels[i] = labels[keep[best]]
+    return labels
+
+
 def _renumber(labels: list[str | None]) -> list[str | None]:
     """Номера собеседников по порядку первого появления: S1, S2…"""
     order: dict[str, str] = {}
@@ -280,7 +412,7 @@ def label_words(words: list[dict], turns: list[tuple[float, float, int]], me_by_
                 m = (w["s"] + w["e"]) / 2
                 k = min(range(len(turns)), key=lambda i: abs(mids[i] - m))
                 labels.append(f"_{turns[k][2]}")
-    return _renumber(_snap_to_sentences(words, _smooth(words, labels)))
+    return _renumber(_snap_to_sentences(words, _fold_fragments(words, _smooth(words, labels))))
 
 
 def activity_turns(audio: np.ndarray, threshold_db: float = -45.0) -> list[tuple[float, float, int]]:
