@@ -8,6 +8,8 @@
 
 ## [Не выпущено]
 
+## [1.4.0] — 2026-10-20
+
 ### Исправлено
 
 - Один человек больше не распадается на нескольких спикеров. Голоса различаются мягче
@@ -127,7 +129,8 @@
 - Необязательная автоочистка старых аудиозаписей.
 - Светлая и тёмная тема, иконка приложения.
 
-[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.1...HEAD
+[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.1.0...v1.2.0
