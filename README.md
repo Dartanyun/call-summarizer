@@ -1,6 +1,6 @@
 # Саммари созвонов
 
-[![Версия](https://img.shields.io/badge/version-1.2.0-2f81f7)](CHANGELOG.md)
+[![Версия](https://img.shields.io/badge/version-1.3.0-2f81f7)](CHANGELOG.md)
 [![CI](https://github.com/Dartanyun/call-summarizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Dartanyun/call-summarizer/actions/workflows/ci.yml)
 [![Windows](https://github.com/Dartanyun/call-summarizer/actions/workflows/windows.yml/badge.svg)](https://github.com/Dartanyun/call-summarizer/actions/workflows/windows.yml)
 [![Платформы](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%2010%2F11-informational)](#установка)

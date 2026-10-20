@@ -8,6 +8,8 @@
 
 ## [Не выпущено]
 
+## [1.3.0] — 2026-10-20
+
 ### Добавлено
 
 - Шаблоны саммари под тип встречи: планёрка, 1:1, собеседование, звонок с клиентом, лекция,
@@ -88,7 +90,8 @@
 - Необязательная автоочистка старых аудиозаписей.
 - Светлая и тёмная тема, иконка приложения.
 
-[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.2.0...HEAD
+[Не выпущено]: https://github.com/Dartanyun/call-summarizer/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Dartanyun/call-summarizer/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Dartanyun/call-summarizer/releases/tag/v1.0.0
