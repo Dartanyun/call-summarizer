@@ -101,7 +101,12 @@ class Recorder:
     def errors(self) -> list[str]:
         if self.paused:
             return []
-        return [f"{t.label}: {e}" for t in self.tracks.values() if (e := t.error())]
+        # одна и та же причина у обеих дорожек (антивирус, служба звука) — один раз
+        found: dict[str, list[str]] = {}
+        for t in self.tracks.values():
+            if e := t.error():
+                found.setdefault(e, []).append(t.label)
+        return [" и ".join([labels[0], *(x.lower() for x in labels[1:])]) + f": {e}" for e, labels in found.items()]
 
     def silent_tracks(self) -> list[str]:
         return [self.devices[k][1].lower() for k, peak in self.peaks.items() if peak < 0.15]

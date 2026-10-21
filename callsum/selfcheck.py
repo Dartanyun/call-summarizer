@@ -193,6 +193,44 @@ def run(args: list[str]) -> int:
 
     check("запись дорожки (ffmpeg, пробный звук)", recorder_pipe, required=osdeps.IS_WIN)
 
+    def blocked():
+        """Windows отвергает даже формат самого устройства (так бывает, когда запись блокирует
+        антивирус) — человеку нужна причина и что сделать, а не «выберите другое устройство»."""
+        import struct
+        import time
+
+        from . import audio_win
+
+        class Source:
+            channels = 2
+
+            def recorder(self, samplerate, channels, blocksize, style="exact"):
+                raise RuntimeError("invalid argument")
+
+        class FakeSoundcard:
+            @staticmethod
+            def get_microphone(_id, include_loopback=False):
+                return Source()
+
+        mix = struct.pack("<HHIIHHHHI", 0xFFFE, 2, 48000, 384000, 8, 32, 22, 32, 0x3) + audio_win._IEEE_FLOAT
+        real_sc, real_mix = audio_win._sc, audio_win.TrackRecorder._mix_format
+        audio_win._sc = lambda: FakeSoundcard
+        audio_win.TrackRecorder._mix_format = staticmethod(lambda source: mix)
+        try:
+            tr = audio_win.TrackRecorder("проба", tmp / "blocked.ogg", "Микрофон", "mic")
+            tr.start()
+            for _ in range(100):
+                if err := tr.error():
+                    break
+                time.sleep(0.1)
+            tr.stop()
+            assert err and "отказала программе в записи звука" in err, err
+            return f"антивирусы: {', '.join(audio_win._antivirus()) or 'не найдены'}"
+        finally:
+            audio_win._sc, audio_win.TrackRecorder._mix_format = real_sc, real_mix
+
+    check("отказ Windows в записи — понятная причина", blocked, required=osdeps.IS_WIN)
+
     if osdeps.IS_WIN:
         def wasapi():
             import soundcard

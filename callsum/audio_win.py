@@ -54,8 +54,57 @@ _HRESULTS = {
 }
 
 
+class _Blocked(RuntimeError):
+    """Windows отвергла даже собственный формат устройства — значит, дело не в формате."""
+
+
+_KASPERSKY = ("Разрешите её в Kaspersky: «Безопасность» → «Предотвращение вторжений» → «Управлять "
+              "приложениями» → {app} → вкладка «Права» → «Изменение операционной системы» → «Подозрительные "
+              "изменения в операционной системе» → «Доступ к устройствам записи звука» → «Разрешить» → "
+              "«Сохранить». И проверьте «Настройки приватности» → «Контроль камеры и микрофона»: там не должно "
+              "быть «Запретить всем приложениям подключаться к микрофону».")
+_antivirus_names: list[str] | None = None
+
+
+def _antivirus() -> list[str]:
+    """Антивирусы, о которых знает «Безопасность Windows», кроме самой Microsoft Defender."""
+    global _antivirus_names
+    if _antivirus_names is None:
+        names: list[str] = []
+        try:
+            out = osdeps.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance -Namespace "
+                 "root/SecurityCenter2 -ClassName AntiVirusProduct | ForEach-Object displayName"],
+                capture_output=True, text=True, timeout=15).stdout
+            names = [n.strip() for n in out.splitlines() if n.strip() and "defender" not in n.lower()]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        _antivirus_names = list(dict.fromkeys(names))
+    return _antivirus_names
+
+
+def _blocked_message() -> str:
+    app = "«Саммари созвонов»" if osdeps.FROZEN else "«Python»"
+    names = _antivirus()
+    text = ("Windows отказала программе в записи звука — даже в собственном формате устройства "
+            "(invalid argument), так что дело не в устройстве. ")
+    if any("kaspersky" in n.lower() for n in names):
+        return text + "Похоже, запись блокирует Kaspersky. " + _KASPERSKY.format(app=app) + \
+            " Потом начните запись заново."
+    if names:
+        return text + (f"Похоже, запись блокирует антивирус ({', '.join(names)}). Разрешите в нём {app} "
+                       "доступ к микрофону и записи звука или добавьте программу в доверенные — проверить "
+                       "можно, приостановив защиту на пару минут.")
+    return text + (f"Так бывает, когда запись блокирует антивирус с защитой микрофона: разрешите в нём {app} "
+                   "запись звука или добавьте программу в доверенные. В Kaspersky: " +
+                   _KASPERSKY.format(app=app).removeprefix("Разрешите её в Kaspersky: "))
+
+
 def _explain(e: Exception) -> str:
     text = str(e) or e.__class__.__name__
+    if isinstance(e, _Blocked):
+        return _blocked_message()
     if text in _FORMAT_ERRORS:
         return ("Windows не дала открыть устройство в подходящем формате (invalid argument). "
                 "Попробуйте выбрать другое устройство в «Настройках» → «Запись»." + _ANTIVIRUS)
@@ -300,6 +349,10 @@ class TrackRecorder:
                 _log(f"{self.label}: открылось не с первой попытки ({about}); до этого: " + "; ".join(failed))
             return opened, rec, rate, ch
         _log(f"{self.label}: устройство не открылось ({about}); " + "; ".join(failed))
+        if mix and last is not None and str(last) in _FORMAT_ERRORS:
+            # отвергнут и формат самого устройства — так Windows отвечает, когда запись блокирует антивирус
+            _log(f"{self.label}: антивирусы: {', '.join(_antivirus()) or 'не найдены'}")
+            raise _Blocked(str(last)) from last
         raise last or RuntimeError("устройство не открылось")
 
     def _run(self):
