@@ -5,6 +5,7 @@
    устройства каждым способом его описать (audio_win.STYLES) и в других форматах.
 3. Настоящая запись: в виртуальный динамик играет тон, микрофон (CABLE Output) и звук
    собеседников («петля» с CABLE Input) пишутся одновременно, как во время созвона.
+4. Кнопка «Проверить запись» из настроек (audio.check_recording) на тех же устройствах.
 """
 
 import struct
@@ -113,6 +114,16 @@ for t, (label, err) in zip(tracks, errors, strict=True):
     say(f"  {label}: формат {t.format or '—'}, записано {secs:.1f} с, громкость {t.peak_seen:.2f}, ошибка: {err or 'нет'}")
     if err or secs < 3.0:
         failures.append(f"{label}: {err or f'записано только {secs:.1f} с'}")
+
+say("== «Проверить запись» из настроек, в динамик снова играет тон")
+player = threading.Thread(target=play, daemon=True)
+player.start()
+time.sleep(0.5)
+report = audio.check_recording(soundcard.default_microphone().id, soundcard.default_speaker().id)
+player.join(timeout=10)
+say(" ", report)
+if report != "Микрофон и собеседники: работает, звук есть.":
+    failures.append(f"проверка записи: {report}")
 
 say()
 say("ИТОГ:", "всё в порядке" if not failures else "не прошли: " + "; ".join(failures))

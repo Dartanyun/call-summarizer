@@ -225,6 +225,15 @@ def run(args: list[str]) -> int:
                 time.sleep(0.1)
             tr.stop()
             assert err and "отказала программе в записи звука" in err, err
+            # «Проверить запись» в настройках: та же причина, одной строкой на обе дорожки
+            from . import audio
+
+            real_tr, audio.TrackRecorder = audio.TrackRecorder, audio_win.TrackRecorder
+            try:
+                report = audio.check_recording("проба", "проба")
+            finally:
+                audio.TrackRecorder = real_tr
+            assert report.startswith("Микрофон и собеседники: Windows отказала"), report
             return f"антивирусы: {', '.join(audio_win._antivirus()) or 'не найдены'}"
         finally:
             audio_win._sc, audio_win.TrackRecorder._mix_format = real_sc, real_mix

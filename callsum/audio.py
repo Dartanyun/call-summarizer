@@ -6,6 +6,7 @@
 """
 
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -18,7 +19,15 @@ else:
     from .audio_pulse import TrackRecorder, default_mic, default_monitor, list_sources
 
 __all__ = ["AudioError", "RECORDER_NAME", "Recorder", "default_mic", "default_monitor", "list_sources",
-           "extract_audio", "make_playback", "probe_duration"]
+           "check_recording", "extract_audio", "make_playback", "probe_duration"]
+
+SILENT = 0.15  # пик громкости ниже этого (около −51 дБ) — на дорожке почти тишина
+CHECK_SECONDS = 3
+
+
+def _together(labels: list[str]) -> str:
+    """«Микрофон», «Собеседники» → «Микрофон и собеседники»."""
+    return " и ".join([labels[0], *(x.lower() for x in labels[1:])])
 
 
 class Recorder:
@@ -106,10 +115,10 @@ class Recorder:
         for t in self.tracks.values():
             if e := t.error():
                 found.setdefault(e, []).append(t.label)
-        return [" и ".join([labels[0], *(x.lower() for x in labels[1:])]) + f": {e}" for e, labels in found.items()]
+        return [f"{_together(labels)}: {e}" for e, labels in found.items()]
 
     def silent_tracks(self) -> list[str]:
-        return [self.devices[k][1].lower() for k, peak in self.peaks.items() if peak < 0.15]
+        return [self.devices[k][1].lower() for k, peak in self.peaks.items() if peak < SILENT]
 
     def stop(self) -> float:
         if not self.paused:
@@ -168,6 +177,55 @@ def make_playback(tracks: dict[str, Path], dst: Path) -> None:
         tmp.unlink(missing_ok=True)
         raise AudioError(f"Не удалось подготовить запись для прослушивания:\n{r.stderr.strip()}")
     tmp.replace(dst)
+
+
+def check_recording(mic: str | None, system: str | None, seconds: float = CHECK_SECONDS) -> str:
+    """Пробная запись с выбранных устройств — так же, как во время созвона, но несколько секунд.
+
+    None — источник выключен, "" — устройство по умолчанию. Возвращает отчёт по дорожкам: пишется ли
+    звук, а если нет — почему (например, запись блокирует антивирус). Ничего не сохраняется."""
+    devices: list[tuple[str, str]] = []
+    if mic is not None:
+        devices.append((mic or default_mic(), "Микрофон"))
+    if system is not None:
+        devices.append((system or default_monitor(), "Собеседники"))
+    if not devices:
+        return "В настройках выключены оба источника звука."
+    report: dict[str, list[str]] = {}
+    with tempfile.TemporaryDirectory(prefix="callsum-check-") as tmp:
+        tracks = [TrackRecorder(device, Path(tmp) / f"{n}.ogg", label, "mic" if label == "Микрофон" else "system")
+                  for n, (device, label) in enumerate(devices)]
+        errors: dict[str, str] = {}
+        for t in tracks:
+            try:
+                t.start()
+            except AudioError as e:
+                errors[t.label] = str(e)
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and len(errors) < len(tracks):
+            time.sleep(0.1)
+            for t in tracks:
+                if t.label not in errors and (e := t.error()):
+                    errors[t.label] = e
+        for t in tracks:
+            t.request_stop()
+        for t in tracks:
+            t.wait_stopped()
+        for t in tracks:
+            if t.label in errors:
+                text = errors[t.label]
+            elif not t.out_path.exists() or t.out_path.stat().st_size == 0 or probe_duration(t.out_path) < 1:
+                text = "устройство открылось, но звук не записался — попробуйте ещё раз или выберите другое устройство."
+            elif t.peak_seen >= SILENT:
+                text = "работает, звук есть."
+            elif t.label == "Микрофон":
+                text = ("пишется, но звука почти нет: скажите что-нибудь во время проверки. Если и так тихо — "
+                        "выберите другой микрофон или проверьте, не выключен ли он.")
+            else:
+                text = ("пишется, но было тихо: включите во время проверки видео или музыку. Если звук слышен, "
+                        "а здесь тихо, — выберите в «Откуда» устройство, в котором он звучит.")
+            report.setdefault(text, []).append(t.label)
+    return "\n".join(f"{_together(labels)}: {text}" for text, labels in report.items())
 
 
 def probe_duration(path: Path) -> float:

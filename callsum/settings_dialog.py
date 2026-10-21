@@ -44,18 +44,26 @@ def _secret(value: str, placeholder: str) -> QLineEdit:
 
 class _Background(QObject):
     """Проверка подключения в фоне: окно настроек не замирает, пока ждём сеть."""
-    done = Signal(object, str)
+    done = Signal(object, str, object)
 
-    def run(self, label: QLabel, work):
-        label.setText("Проверяю…")
+    def run(self, label: QLabel, work, busy: str = "Проверяю…", button: QPushButton | None = None):
+        label.setText(busy)
+        if button:
+            button.setEnabled(False)  # одна проверка за раз
 
         def target():
             try:
                 text = work()
             except Exception as e:  # noqa: BLE001 — показываем любую ошибку подключения
                 text = f"Не получилось: {e}"
-            self.done.emit(label, text)
+            self.done.emit(label, text, button)
         threading.Thread(target=target, daemon=True).start()
+
+    @staticmethod
+    def show(label: QLabel, text: str, button: QPushButton | None):
+        label.setText(text)
+        if button:
+            button.setEnabled(True)
 
 
 PAGES = [("settings", "Общие"), ("sparkles", "Саммари"), ("text", "Распознавание"), ("mic", "Запись"),
@@ -72,7 +80,7 @@ class SettingsDialog(QDialog):
         self.cfg = dict(cfg)
         self._parent = parent
         self.bg = _Background(self)
-        self.bg.done.connect(lambda label, text: label.setText(text))
+        self.bg.done.connect(_Background.show)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 14)
@@ -378,7 +386,23 @@ class SettingsDialog(QDialog):
         f.addRow("Откуда:", self.system)
         f.addRow(_hint("«По умолчанию» — запись сама переключается туда, где сейчас звучит звонок "
                        "(например, на подключённую гарнитуру)."))
+        row = QHBoxLayout()
+        self.rec_status = _hint(f"Запишет {audio.CHECK_SECONDS} секунды с выбранных устройств и ничего не сохранит: "
+                                "скажите что-нибудь и включите звук, чтобы проверить обе дорожки. Лучше сделать "
+                                "это до созвона — если запись блокирует антивирус, здесь будет видно, что делать.")
+        self.rec_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)  # путь в антивирусе
+        row.addWidget(self.rec_status, 1)
+        self.rec_check = QPushButton("Проверить запись")
+        self.rec_check.clicked.connect(self._check_recording)
+        row.addWidget(self.rec_check, 0, Qt.AlignmentFlag.AlignTop)
+        f.addRow(row)
         layout.addWidget(g)
+
+    def _check_recording(self):
+        mic = self.mic.currentData() if self.record_mic.isChecked() else None
+        system = self.system.currentData() if self.record_system.isChecked() else None
+        self.bg.run(self.rec_status, lambda: audio.check_recording(mic, system),
+                    busy=f"Записываю {audio.CHECK_SECONDS} секунды — скажите что-нибудь…", button=self.rec_check)
 
     def _page_silent(self, layout: QVBoxLayout):
         cfg, parent = self.cfg, self._parent
