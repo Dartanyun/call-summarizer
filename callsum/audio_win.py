@@ -87,8 +87,10 @@ def _antivirus() -> list[str]:
 def _blocked_message() -> str:
     app = "«Саммари созвонов»" if osdeps.FROZEN else "«Python»"
     names = _antivirus()
-    text = ("Windows отказала программе в записи звука — даже в собственном формате устройства "
-            "(invalid argument), так что дело не в устройстве. ")
+    text = ("Windows отказала программе в записи звука (invalid argument) — даже в собственном формате "
+            "устройства и тем же способом, каким пишет OBS. Значит, дело не в устройстве: запись запрещена "
+            "именно этой программе — так делает антивирус, которому она незнакома (известным программам "
+            "вроде OBS он доверяет). ")
     if any("kaspersky" in n.lower() for n in names):
         return text + "Похоже, запись блокирует Kaspersky. " + _KASPERSKY.format(app=app) + \
             " Потом начните запись заново."
@@ -140,9 +142,12 @@ _MASKS = {1: 0x4, 2: 0x3, 3: 0x7, 4: 0x33, 5: 0x37, 6: 0x3F, 7: 0x13F, 8: 0x63F}
 # флаги потока: перевод формата и частоты силами Windows (autoconvert + хороший ресемплер), без «persist»
 _CONVERT = 0x80000000 | 0x08000000 | 0x00080000
 _LOOPBACK = 0x00020000
-# как описать Windows формат потока, по порядку попыток: формат смешивания устройства байт в байт и без
-# флагов (как в примере записи от Microsoft); свой WAVEFORMATEXTENSIBLE; простой WAVEFORMATEX
-STYLES = ("exact", "ext", "plain")
+_EVENT = 0x00040000  # AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+_OBS_BUFFER = 5 * 10_000_000  # 5 с, в сотнях наносекунд
+# как открыть поток, по порядку попыток: формат смешивания устройства байт в байт и без флагов (как
+# в примере записи от Microsoft); он же с событием и буфером на 5 с (ровно как OBS); свой
+# WAVEFORMATEXTENSIBLE с переводом формата; простой WAVEFORMATEX
+STYLES = ("exact", "obs", "ext", "plain")
 
 
 def _mix_bytes(mf, ptr) -> bytes:
@@ -176,8 +181,9 @@ def _stream_format(mix: bytes, rate: int, ch: int, style: str) -> tuple[bytes, i
     совпадает с нужным. Иначе — float32 с переводом формата силами Windows; маска каналов —
     устройства, если число каналов то же, иначе стандартная раскладка."""
     mix_rate, mix_ch, mix_mask, is_float = _mix_info(mix)
-    if style == "exact" and (rate, ch) == (mix_rate, mix_ch) and is_float:
-        return mix, 0, "формат устройства как есть"
+    if style in ("exact", "obs") and (rate, ch) == (mix_rate, mix_ch) and is_float:
+        return (mix, _EVENT, "формат устройства как есть, как в OBS") if style == "obs" else \
+            (mix, 0, "формат устройства как есть")
     if style == "plain":
         return struct.pack("<HHIIHHH", 3, ch, rate, rate * ch * 4, ch * 4, 32, 0), _CONVERT, "WAVEFORMATEX"
     mask = mix_mask if ch == mix_ch and bin(mix_mask).count("1") == ch else _MASKS.get(ch, 0)
@@ -209,10 +215,17 @@ def _fix_format(mf) -> None:
         self.format_note += f", флаги {flags:#x}"
         self._format = mf._ffi.new("char[]", fmt)  # память нужна, пока жив клиент
         mode = mf._ole32.AUDCLNT_SHAREMODE_EXCLUSIVE if exclusive_mode else mf._ole32.AUDCLNT_SHAREMODE_SHARED
-        hr = ptr[0][0].lpVtbl.Initialize(ptr[0], mode, flags, int(blocksize / samplerate * 10_000_000), 0,
+        duration = _OBS_BUFFER if flags & _EVENT else int(blocksize / samplerate * 10_000_000)
+        hr = ptr[0][0].lpVtbl.Initialize(ptr[0], mode, flags, duration, 0,
                                          mf._ffi.cast("WAVEFORMATEXTENSIBLE*", self._format), mf._ffi.NULL)
+        self._event = None
+        if hr == 0 and flags & _EVENT:
+            # с событием Windows требует его до Start; данные soundcard всё равно забирает опросом
+            self._event = ctypes.windll.kernel32.CreateEventW(None, False, False, None)
+            hr = ptr[0][0].lpVtbl.SetEventHandle(ptr[0], mf._ffi.cast("HANDLE", self._event))
         if hr != 0:
             mf._com.release(ptr)  # клиент так и не заработал
+            _close_event(self)
             try:
                 mf._com.check_error(hr)
             except RuntimeError as e:
@@ -227,9 +240,24 @@ def _fix_format(mf) -> None:
         return mf._Recorder(self._audio_client(), samplerate, channels, blocksize, self.isloopback,
                             exclusive_mode, style)
 
+    exit_recorder = mf._Recorder.__exit__
+
+    def exit_(self, *args):
+        try:
+            return exit_recorder(self, *args)
+        finally:
+            _close_event(self)
+
     mf._AudioClient.__init__ = init
     mf._Microphone.recorder = recorder
+    mf._Recorder.__exit__ = exit_
     mf._AudioClient._callsum_fixed = True
+
+
+def _close_event(client) -> None:
+    if getattr(client, "_event", None):
+        ctypes.windll.kernel32.CloseHandle(client._event)
+        client._event = None
 
 
 def list_sources() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -308,6 +336,26 @@ class TrackRecorder:
         except Exception:  # noqa: BLE001 — не узнали: обойдёмся перебором
             return None
 
+    @staticmethod
+    def _supported(source, mix: bytes) -> str:
+        """Ответ Windows на IsFormatSupported для формата смешивания: 0x00000000 — «да, подходит»."""
+        try:
+            from soundcard import mediafoundation as mf
+
+            client = source._audio_client()
+            try:
+                fmt = mf._ffi.new("char[]", mix)
+                closest = mf._ffi.new("WAVEFORMATEXTENSIBLE**")
+                hr = client[0][0].lpVtbl.IsFormatSupported(client[0], mf._ole32.AUDCLNT_SHAREMODE_SHARED,
+                                                           mf._ffi.cast("WAVEFORMATEXTENSIBLE*", fmt), closest)
+                if closest[0] != mf._ffi.NULL:
+                    mf._ole32.CoTaskMemFree(closest[0])
+            finally:
+                mf._com.release(client)
+            return f"{hr & 0xFFFFFFFF:#010x}"
+        except Exception as e:  # noqa: BLE001 — это только для журнала
+            return f"не узнать ({e})"
+
     def _open(self, source):
         """Открывает устройство в формате, который примет Windows.
 
@@ -320,7 +368,7 @@ class TrackRecorder:
         tries = []
         if mix:
             rate, ch, _mask, is_float = _mix_info(mix)
-            tries = [(rate, ch, style) for style in (STYLES if is_float else STYLES[1:])]
+            tries = [(rate, ch, style) for style in STYLES if is_float or style in ("ext", "plain")]
         tries += [(rate, ch, "ext") for rate in RATES for ch in (own, 2, 1, 4, 6, 8) if ch > 0]
         failed: list[str] = []
         last: Exception | None = None
@@ -349,9 +397,11 @@ class TrackRecorder:
                 _log(f"{self.label}: открылось не с первой попытки ({about}); до этого: " + "; ".join(failed))
             return opened, rec, rate, ch
         _log(f"{self.label}: устройство не открылось ({about}); " + "; ".join(failed))
-        if mix and last is not None and str(last) in _FORMAT_ERRORS:
-            # отвергнут и формат самого устройства — так Windows отвечает, когда запись блокирует антивирус
-            _log(f"{self.label}: антивирусы: {', '.join(_antivirus()) or 'не найдены'}")
+        if mix and _mix_info(mix)[3] and last is not None and str(last) in _FORMAT_ERRORS:
+            # отвергнут и формат самого устройства, в том числе так, как его открывает OBS, — так Windows
+            # отвечает, когда запись блокирует антивирус
+            _log(f"{self.label}: поддерживает ли устройство свой формат (IsFormatSupported): "
+                 f"{self._supported(source, mix)}; антивирусы: {', '.join(_antivirus()) or 'не найдены'}")
             raise _Blocked(str(last)) from last
         raise last or RuntimeError("устройство не открылось")
 
