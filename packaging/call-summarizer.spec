@@ -21,6 +21,9 @@ datas = (
 binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("sherpa_onnx")
 hiddenimports = ["callsum.selfcheck", "callsum.kde_hotkey", "callsum.help_view", "callsum.tasks_dialog", "callsum.installs"]
 if IS_WIN:
+    # cuBLAS для видеокарты NVIDIA (~550 МБ) — только если в окружении сборки стоит extra [cuda];
+    # osdeps.load_cuda_libs найдёт его в _internal/nvidia/cublas/bin
+    binaries += collect_dynamic_libs("nvidia.cublas")
     datas += collect_data_files("soundcard")  # описание WASAPI для cffi (mediafoundation.py.h)
     hiddenimports += ["callsum.audio_win", "callsum.callwatch_win", "callsum.hotkey_win"]
 else:

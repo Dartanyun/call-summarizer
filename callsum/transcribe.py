@@ -37,6 +37,7 @@ def _load_model(name: str, device: str = "auto"):
 
         _model = None  # освобождаем память от предыдущей модели
         if want == "cuda":
+            osdeps.load_cuda_libs()
             try:
                 model = WhisperModel(name, device="cuda", compute_type="float16")
                 # библиотеки CUDA (cuBLAS, cuDNN) подгружаются только при работе — проверяем сразу

@@ -103,6 +103,35 @@ def fix_ssl_certs() -> None:
             return
 
 
+_CUBLAS_DLLS = ("cublasLt64_12.dll", "cublas64_12.dll")  # cuBLAS зависит от cuBLASLt — грузим его первым
+_cuda_libs_loaded = False
+
+
+def load_cuda_libs() -> bool:
+    """Windows: ctranslate2 ищет cuBLAS 12 по имени только в PATH, и без CUDA Toolkit не находит его.
+    Подгружаем DLL заранее по полному пути — из пакета nvidia-cublas-cu12 (в том числе внутри
+    готовой сборки) или из CUDA Toolkit; уже загруженную библиотеку Windows больше не ищет."""
+    global _cuda_libs_loaded
+    if not IS_WIN or _cuda_libs_loaded:
+        return _cuda_libs_loaded
+    import ctypes
+
+    roots = [*sys.path, getattr(sys, "_MEIPASS", "")]
+    dirs = [os.path.join(r, "nvidia", "cublas", "bin") for r in roots if r]
+    if os.environ.get("CUDA_PATH"):
+        dirs.append(os.path.join(os.environ["CUDA_PATH"], "bin"))
+    for d in dirs:
+        if all(os.path.isfile(os.path.join(d, name)) for name in _CUBLAS_DLLS):
+            try:
+                for name in _CUBLAS_DLLS:
+                    ctypes.WinDLL(os.path.join(d, name))
+            except OSError:
+                continue
+            _cuda_libs_loaded = True
+            break
+    return _cuda_libs_loaded
+
+
 # ---------------- прокси ----------------
 
 PROXY_SCHEMES = ("http", "https", "socks5", "socks5h", "socks4")
