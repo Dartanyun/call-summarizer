@@ -25,6 +25,11 @@ dependencies = [
     "imageio-ffmpeg>=0.5; sys_platform == 'win32'",
 ]
 
+[project.optional-dependencies]
+# Распознавание на видеокарте NVIDIA в Windows: в ctranslate2 вшит только cuDNN, а cuBLAS 12
+# (~550 МБ) он ищет в системе. Без CUDA Toolkit ставим его так: pip install "call-summarizer[cuda]"
+cuda = ["nvidia-cublas-cu12>=12.4,<13; sys_platform == 'win32'"]
+
 [project.gui-scripts]
 call-summarizer = "callsum.__main__:main"
 
