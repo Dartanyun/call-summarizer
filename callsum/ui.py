@@ -1905,9 +1905,13 @@ class MainWindow(QMainWindow):
 
     def cancel_current(self):
         call = self.current_call()
-        if call:
+        if not call:
+            return
+        if self.pipeline.is_busy(call.id):
             self.pipeline.cancel(call.id)
             self.banner.title.setText("Отмена…")
+        else:
+            self.show_current()  # обработка уже закончилась, а баннер устарел — просто обновляем его
 
     def on_status(self, call_id: str, text: str, frac: float):
         self.status_text[call_id] = (text, frac)
