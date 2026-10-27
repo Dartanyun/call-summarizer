@@ -53,15 +53,22 @@ class Pipeline(QObject):
             self.current = call.id
             cancelled = lambda cid=call.id: cid in self._cancel  # noqa: E731
             stage = ""
+            # Последний сигнал отправляем, только когда запись уже не числится в обработке: окно может
+            # принять сигнал раньше, чем этот поток дойдёт до следующей строки, и тогда баннер
+            # «идёт обработка» с кнопкой «Отменить» так и остался бы на экране.
+            final = None
             try:
-                for stage in stages:
+                for i, stage in enumerate(stages):
                     if cancelled():
                         raise transcribe.Cancelled()
                     getattr(self, f"_do_{stage}")(call, src, cancelled)
-                    self.stage_done.emit(call.id, stage)
+                    if i < len(stages) - 1:
+                        self.stage_done.emit(call.id, stage)
+                    else:
+                        final = (self.stage_done, (call.id, stage))
             except (transcribe.Cancelled, speakers.Cancelled):
                 self._restore_status(call)
-                self.failed.emit(call.id, stage, "Отменено.")
+                final = (self.failed, (call.id, stage, "Отменено."))
             except Exception as e:  # noqa: BLE001 — показываем пользователю любую ошибку
                 traceback.print_exc()
                 msg = str(e) or e.__class__.__name__
@@ -69,13 +76,15 @@ class Pipeline(QObject):
                     self._restore_status(call)
                 else:
                     call.save(status="error", error=msg)
-                self.failed.emit(call.id, stage, msg)
+                final = (self.failed, (call.id, stage, msg))
             finally:
                 self._pending.discard(call.id)
                 self._cancel.discard(call.id)
                 self.current = None
-                if not self._pending:
-                    self.idle.emit()
+            if final:
+                final[0].emit(*final[1])
+            if not self._pending:
+                self.idle.emit()
 
     @staticmethod
     def _restore_status(call: Call):

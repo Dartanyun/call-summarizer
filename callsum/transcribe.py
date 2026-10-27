@@ -28,8 +28,20 @@ def cuda_available() -> bool:
         return False
 
 
-def _load_model(name: str, device: str = "auto"):
-    """device: auto — видеокарта NVIDIA, если она есть и для неё стоят библиотеки CUDA, иначе процессор."""
+def model_cached(name: str) -> bool:
+    """Модель уже скачана в кэш Hugging Face — тогда её можно грузить без интернета."""
+    from faster_whisper.utils import download_model
+
+    try:
+        download_model(name, local_files_only=True)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _load_model(name: str, device: str = "auto", local: bool = False):
+    """device: auto — видеокарта NVIDIA, если она есть и для неё стоят библиотеки CUDA, иначе процессор.
+    local: модель уже в кэше — не спрашиваем Hugging Face о новой версии."""
     global _model, _model_key, device_used
     want = "cuda" if device == "cuda" or (device == "auto" and cuda_available()) else "cpu"
     if _model_key != (name, want):
@@ -39,7 +51,7 @@ def _load_model(name: str, device: str = "auto"):
         if want == "cuda":
             osdeps.load_cuda_libs()
             try:
-                model = WhisperModel(name, device="cuda", compute_type="float16")
+                model = WhisperModel(name, device="cuda", compute_type="float16", local_files_only=local)
                 # библиотеки CUDA (cuBLAS, cuDNN) подгружаются только при работе — проверяем сразу
                 list(model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="ru")[0])
                 _model, _model_key, device_used = model, (name, want), "cuda"
@@ -51,7 +63,7 @@ def _load_model(name: str, device: str = "auto"):
                         "(cuBLAS 12, cuDNN 9). Выберите в настройках «Процессор» или см. справку → «Видеокарта».") from e
                 want = "cpu"
         threads = max(1, (os.cpu_count() or 4) - 2)
-        _model = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=threads)
+        _model = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=threads, local_files_only=local)
         _model_key, device_used = (name, want), "cpu"
     return _model
 
@@ -98,12 +110,27 @@ def transcribe(
     Дорожки смешиваются: так речь не задваивается, даже если микрофон слышит колонки.
     on_status(текст, доля 0..1 или None для неопределённого прогресса).
     """
+    local = True
     if not _model_key or _model_key[0] != model_name:
-        on_status(f"Загрузка модели {model_name} (в первый раз она скачивается, это может занять несколько минут)…", None)
-    model = _load_model(model_name, device)
+        # «скачивается» пишем, только если модели правда нет в кэше: иначе это просто загрузка в память
+        local = model_cached(model_name)
+        on_status(f"Загрузка модели {model_name}…" if local else
+                  f"Скачивание модели {model_name} (один раз, это может занять несколько минут)…", None)
+    model = _load_model(model_name, device, local)
+    # загрузку модели и подготовку звука не прервать на середине — проверяем отмену между шагами
+    if cancelled():
+        raise Cancelled()
 
     on_status("Подготовка звука" + (" и шумоподавление…" if denoise else "…"), None)
-    decoded = [a for a in (decode(p, denoise) for p in tracks.values()) if a.size > SAMPLE_RATE // 2]
+    decoded = []
+    for p in tracks.values():
+        if cancelled():
+            raise Cancelled()
+        a = decode(p, denoise)
+        if a.size > SAMPLE_RATE // 2:
+            decoded.append(a)
+    if cancelled():
+        raise Cancelled()
     if not decoded:
         raise RuntimeError("В записи нет звука.")
     audio = mix(decoded)
